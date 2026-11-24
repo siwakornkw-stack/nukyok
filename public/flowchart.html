@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flowchart แยกตามบทบาท</title>
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#f7f7f5; --card:#fff; --ink:#1e1e1e; --muted:#666; --line:#e2e2de; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:'Sarabun',system-ui,sans-serif; background:var(--bg); color:var(--ink); line-height:1.5; }
+  header { padding:22px 24px 10px; }
+  h1 { margin:0 0 4px; font-size:22px; }
+  header p { margin:0; color:var(--muted); }
+  nav { position:sticky; top:0; z-index:5; background:rgba(247,247,245,.96); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; flex-wrap:wrap; gap:8px; }
+  button { font-family:inherit; font-size:14px; padding:6px 12px; border-radius:8px; border:1px solid var(--line); background:#fff; cursor:pointer; color:var(--ink); }
+  button:hover { background:#f0f0ee; }
+  nav button { border-left:5px solid var(--c); }
+  .legend { display:flex; flex-wrap:wrap; gap:14px; padding:12px 24px 0; font-size:14px; }
+  .legend span { display:inline-flex; align-items:center; gap:6px; }
+  .legend i { width:14px; height:14px; border-radius:3px; border:1px solid; display:inline-block; }
+  .box { margin:16px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; overflow:auto; }
+  .box h2 { margin:0 0 10px; font-size:18px; }
+  table { border-collapse:collapse; width:100%; min-width:680px; font-size:14px; }
+  th, td { text-align:left; vertical-align:top; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th { background:#fafaf8; font-weight:600; }
+  td:first-child { font-weight:600; white-space:nowrap; }
+  td:first-child span { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; }
+  .role { margin:16px; border:1px solid var(--line); border-top:5px solid var(--c); border-radius:12px; background:var(--t); padding:14px; scroll-margin-top:60px; }
+  .role-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+  .role-head h2 { margin:0; font-size:19px; }
+  .role-head p { margin:0; color:var(--muted); font-size:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; align-items:start; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px; min-width:0; }
+  .card-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px; }
+  .card-head h3 { margin:0; font-size:15px; }
+  .card-head button { font-size:12px; padding:4px 10px; white-space:nowrap; }
+  .dg { overflow:auto; text-align:center; min-height:60px; }
+  .dg svg { height:auto; display:block; margin:0 auto; }
+  .dg.big { max-height:82vh; border:1px solid var(--line); border-radius:8px; padding:8px; }
+  .tools { display:flex; flex-wrap:wrap; align-items:center; gap:6px; justify-content:flex-end; }
+  #zoomLabel { color:var(--muted); font-size:12px; min-width:38px; text-align:right; }
+  .fallback { text-align:left; font-size:12px; background:#fafaf8; border:1px solid var(--line); border-radius:8px; padding:10px; white-space:pre-wrap; }
+  .warn { margin:0 16px; padding:10px 14px; border:1px solid #FF9E42; background:#FFE0C2; border-radius:10px; display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Flowchart แยกตามบทบาท: เติมน้ำมัน / เข้างาน / แจ้งซ่อม</h1>
+  <p>แต่ละบทบาทเห็นเฉพาะขั้นตอนของตัวเอง ตั้งแต่กด Rich Menu หรือได้รับ LINE จนจบงาน</p>
+</header>
+
+<nav>
+  <button data-go="overview" style="--c:#999">ภาพรวม</button>
+  <button data-go="all" style="--c:#555">รวมทั้งระบบ</button>
+  <button data-go="login" style="--c:#B3B3B3">เข้าระบบ</button>
+  <button data-go="driver" style="--c:#3DADFF">1 คนขับ</button>
+  <button data-go="filler" style="--c:#FFC943">2 คนเติม</button>
+  <button data-go="office" style="--c:#874FFF">3 Office</button>
+  <button data-go="exec" style="--c:#FF9E42">4 ผู้บริหาร</button>
+  <button data-go="purchase" style="--c:#5AD8CC">5 จัดซื้อ</button>
+  <button data-go="account" style="--c:#F849C1">6 บัญชี</button>
+</nav>
+
+<div class="legend">
+  <span><i style="background:#fff;border-color:#9a9a9a"></i>สิ่งที่บทบาทนี้ทำเอง</span>
+  <span><i style="background:#FFF6DE;border-color:#FFC943"></i>LINE ที่ได้รับ</span>
+  <span><i style="background:#EFEFEF;border-color:#9a9a9a"></i>ระบบ หรือบทบาทอื่นทำ</span>
+  <span><i style="background:#CDF4D3;border-color:#66D575"></i>Express</span>
+  <span><i style="background:#FFCDC2;border-color:#FF7556"></i>ผิดปกติ / ไม่อนุมัติ</span>
+  <span>เส้นหนา = ทางหลัก · เส้นประ = เกิดภายหลัง</span>
+</div>
+
+<p class="warn" id="warn">โหลดตัววาดแผนภาพไม่ได้ จึงแสดงเป็นโค้ด Mermaid แทน คัดลอกไปวางใน mermaid.live เพื่อดูภาพได้</p>
+
+<div class="box" id="overview" style="scroll-margin-top:60px">
+  <h2>ภาพรวม: ใครทำอะไร และได้รับ LINE อะไร</h2>
+  <table>
+    <thead><tr><th>บทบาท</th><th>สิ่งที่ทำในระบบ</th><th>LINE ที่ได้รับ</th></tr></thead>
+    <tbody>
+      <tr><td><span style="background:#3DADFF"></span>คนขับ</td><td>เข้างาน / ออกงาน · ขอเติมน้ำมัน · แจ้งซ่อม · ตรวจรับรถหลังซ่อม</td><td>ลืมออกงาน · ผลอนุมัติซ่อม · เปิด PO แล้ว · ซ่อมเสร็จ · ใกล้รอบเช็คระยะ</td></tr>
+      <tr><td><span style="background:#FFC943"></span>คนเติม</td><td>บันทึกการเติม แนบสลิปและเลขไมค์ · แก้รายการที่ถูกส่งกลับ</td><td>มีคำขอเติมน้ำมัน · เตือนซ้ำเมื่อค้าง · ส่งกลับแก้ไข</td></tr>
+      <tr><td><span style="background:#874FFF"></span>Office</td><td>อนุมัติบทบาทผู้ใช้ใหม่ · ตรวจและอนุมัติรายการน้ำมัน · ดูรีพอร์ตเข้างาน หน้าสินทรัพย์ Dashboard</td><td>น้ำมันผิดปกติ · คนขับลืมออกงาน · สรุปรายวัน / สัปดาห์</td></tr>
+      <tr><td><span style="background:#FF9E42"></span>ผู้บริหาร</td><td>อนุมัติ / ไม่อนุมัติงานซ่อม · ดู Dashboard และหน้าสินทรัพย์</td><td>งานซ่อมด่วน · ขออนุมัติพร้อมใบเสนอราคา · เปิด PO แล้ว</td></tr>
+      <tr><td><span style="background:#5AD8CC"></span>จัดซื้อ</td><td>ใส่ใบเสนอราคา · ใส่ค่าซ่อม แนบบิลและรูป · อัปเดตสถานะซ่อม</td><td>มีแจ้งซ่อมใหม่ · อนุมัติแล้ว · ซ่อมไม่เรียบร้อย · ใกล้รอบเช็คระยะ</td></tr>
+      <tr><td><span style="background:#F849C1"></span>บัญชี</td><td>ตรวจเอกสารใน Express · ดู Dashboard ต้นทุนต่อคัน</td><td>เปิด PO / H3 / R3 งานซ่อมแล้ว</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<section class="role" id="all" style="--c:#555;--t:#fff">
+  <div class="role-head"><h2>Flowchart รวมทั้งระบบ</h2><p>ทุกบทบาทในภาพเดียว แผนภาพใหญ่ ใช้ปุ่มซูม หรือลากเลื่อนดูในกรอบได้ วงย้อนกลับแบบละเอียดดูได้ในแผนภาพของแต่ละบทบาท</p></div>
+  <div class="legend" style="padding:0 0 10px">
+    <span><i style="background:#EAF5FF;border-color:#3DADFF"></i>เข้างาน / ออกงาน</span>
+    <span><i style="background:#FFF6DE;border-color:#FFC943"></i>เติมน้ำมัน</span>
+    <span><i style="background:#FDEBF5;border-color:#F849C1"></i>แจ้งซ่อม</span>
+    <span><i style="background:#F0E9FF;border-color:#874FFF"></i>Office / รายงาน</span>
+    <span><i style="background:#F5F5F5;border-color:#B3B3B3"></i>ตรวจอัตโนมัติ / ข้อมูลกลาง</span>
+    <span><i style="background:#CDF4D3;border-color:#66D575"></i>Express</span>
+    <span><i style="background:#FFCDC2;border-color:#FF7556"></i>แจ้งเตือน / ไม่อนุมัติ</span>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <h3>เติมน้ำมัน / เข้างาน / แจ้งซ่อม</h3>
+      <div class="tools">
+        <span id="zoomLabel">100%</span>
+        <button id="zoomOut">−</button>
+        <button id="zoomIn">+</button>
+        <button id="zoomFit">พอดีจอ</button>
+        <button id="zoomFull">100%</button>
+        <button data-copy="d-all">คัดลอกโค้ด</button>
+      </div>
+    </div>
+    <div class="dg big" id="d-all"></div>
+  </div>
+</section>
+
+<section class="role" id="login" style="--c:#B3B3B3;--t:#F5F5F5">
+  <div class="role-head"><h2>เข้าระบบ (ทุกบทบาท)</h2><p>ทำครั้งแรกครั้งเดียว หลังจากนั้นเข้า Rich Menu ของตัวเองได้เลย</p></div>
+  <div class="card">
+    <div class="card-head"><h3>ผูก LINE ID กับบทบาท</h3><button data-copy="d-login">คัดลอกโค้ด</button></div>
+    <div class="dg" id="d-login"></div>
+  </div>
+</section>
+
+<section class="role" id="driver" style="--c:#3DADFF;--t:#EAF5FF">
+  <div class="role-head"><h2>1. คนขับ</h2><p>Rich Menu มี 3 เมนู: เข้างาน / เติมน้ำมัน / แจ้งซ่อม</p></div>
+  <div class="grid">
+    <div class="card">
+      <div class="card-head"><h3>1.1 เข้างาน / ออกงาน</h3><button data-copy="d-driver-att">คัดลอกโค้ด</button></div>
+      <div class="dg" id="d-driver-att"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>1.2 ขอเติมน้ำมัน</h3><button data-copy="d-driver-fuel">คัดลอกโค้ด</button></div>
+      <div class="dg" id="d-driver-fuel"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>1.3 แจ้งซ่อม</h3><button data-copy="d-driver-rep">คัดลอกโค้ด</button></div>
+      <div class="dg" id="d-driver-rep"></div>
+    </div>
+  </div>
+</section>
+
+<section class="role" id="filler" style="--c:#FFC943;--t:#FFF6DE">
+  <div class="role-head"><h2>2. คนเติม</h2><p>เริ่มจาก LINE แจ้งคำขอ หรือเปิดจาก Rich Menu</p></div>
+  <div class="grid">
+    <div class="card">
+      <div class="card-head"><h3>2.1 บันทึกการเติมน้ำมัน</h3><button data-copy="d-filler">คัดลอกโค้ด</button></div>
+      <div class="dg" id="d-filler"></div>
+    </div>
+  </div>
+</section>
+
+<section class="role" id="office" style="--c:#874FFF;--t:#F0E9FF">
+  <div class="role-head"><h2>3. Office</h2><p>ตรวจรายการน้ำมัน อนุมัติผู้ใช้ และดูรายงาน</p></div>
+  <div class="grid">
+    <div class="card">
+      <div class="card-head"><h3>3.1 ตรวจและอนุมัติรายการน้ำมัน</h3><button data-copy="d-office-fuel">คัดลอกโค้ด</button></div>
+      <div class="dg" id="d-office-fuel"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>3.2 ผู้ใช้ และรายงาน</h3><button data-copy="d-office-menu">คัดลอกโค้ด</button></div>
+      <div class="dg" id="d-office-menu"></div>
+    </div>
+  </div>
+</section>
+
+<section class="role" id="exec" style="--c:#FF9E42;--t:#FFF1E3">
+  <div class="role-head"><h2>4. ผู้บริหาร</h2><p>อนุมัติงานซ่อมผ่าน LINE และดูต้นทุน</p></div>
+  <div class="grid">
+    <div class="card">
+      <div class="card-head"><h3>4.1 อนุมัติงานซ่อม</h3><button data-copy="d-exec-rep">คัดลอกโค้ด</button></div>
+      <div class="dg" id="d-exec-rep"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>4.2 ดูรายงาน</h3><button data-copy="d-exec-menu">คัดลอกโค้ด</button></div>
+      <div class="dg" id="d-exec-menu"></div>
+    </div>
+  </div>
+</section>
+
+<section class="role" id="purchase" style="--c:#5AD8CC;--t:#E6FAF8">
+  <div class="role-head"><h2>5. จัดซื้อ</h2><p>ใบเสนอราคา ค่าซ่อม และติดตามงานซ่อมจนปิดงาน</p></div>
+  <div class="grid">
+    <div class="card">
+      <div class="card-head"><h3>5.1 งานซ่อม</h3><button data-copy="d-purchase">คัดลอกโค้ด</button></div>
+      <div class="dg" id="d-purchase"></div>
+    </div>
+  </div>
+</section>
+
+<section class="role" id="account" style="--c:#F849C1;--t:#FDEBF5">
+  <div class="role-head"><h2>6. บัญชี</h2><p>รับแจ้งเมื่อเปิดเอกสารใน Express และดูต้นทุน</p></div>
+  <div class="grid">
+    <div class="card">
+      <div class="card-head"><h3>6.1 เอกสาร และรายงาน</h3><button data-copy="d-account">คัดลอกโค้ด</button></div>
+      <div class="dg" id="d-account"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= Mermaid sources ================= -->
+<script type="text/plain" data-diagram="d-all">
+flowchart LR
+    lineOA(["LINE OA"])
+    roleCheck{"ผูก LINE ID<br>กับบทบาทแล้ว?"}
+    register["ลงทะเบียน<br>Office อนุมัติบทบาท"]
+    richMenu["Rich Menu ตามบทบาท<br>คนขับ / คนเติม / Office<br>ผู้บริหาร / จัดซื้อ / บัญชี"]
+
+    lineOA --> roleCheck
+    roleCheck -->|"ยัง"| register --> richMenu
+    roleCheck -->|"แล้ว"| richMenu
+
+    subgraph attSec ["เข้างาน / ออกงาน (คนขับ)"]
+        attBtn["กดเมนู เข้างาน"]
+        attChoose{"เข้างาน<br>หรือ ออกงาน?"}
+        hasIn{"วันนี้<br>เข้างานแล้ว?"}
+        blockOut["แจ้งให้กดเข้างานก่อน"]
+        attPhoto[/"อัปโหลดรูปที่มีวันเวลา / สถานที่<br>+ บันทึกพิกัด GPS อัตโนมัติ"/]
+        attSave["บันทึกเวลาเข้า / ออก"]
+    end
+
+    richMenu -->|"คนขับ: เข้างาน"| attBtn
+    attBtn --> attChoose
+    attChoose -->|"เข้างาน"| attPhoto
+    attChoose -->|"ออกงาน"| hasIn
+    hasIn -->|"ยัง"| blockOut
+    hasIn -->|"แล้ว"| attPhoto
+    attPhoto --> attSave
+
+    subgraph fuelSec ["เติมน้ำมัน (คนขับ / คนเติม)"]
+        driverPage["คนขับ: ขอเติมน้ำมัน"]
+        remembered{"เคยติ๊ก<br>จำข้อมูลไว้?"}
+        prefill["ดึงชื่อ / รุ่นรถที่จำไว้"]
+        driverCar[/"กรอกชื่อ / รุ่นรถ<br>+ ติ๊ก จำข้อมูลไว้"/]
+        driverForm[/"ชั่วโมงเครื่อง + รูปหน้าปัด"/]
+        submitReq["สร้างคำขอ<br>สถานะ: รอเติม"]
+        cancelled(["คนขับยกเลิกคำขอ"])
+        notifyFiller["แจ้งคนเติม ผ่าน LINE<br>ค้างเกินเวลา เตือนซ้ำ"]
+        fillerForm[/"คนเติม: ลิตร / ราคาต่อลิตร / ยอดเงิน<br>ปั๊มหรือถังกลาง + รูปสลิป + เลขไมค์"/]
+        fillSubmit["บันทึก<br>สถานะ: เติมแล้ว"]
+    end
+
+    richMenu -->|"คนขับ: เติมน้ำมัน"| driverPage
+    driverPage --> remembered
+    remembered -->|"ใช่"| prefill --> driverForm
+    remembered -->|"ไม่"| driverCar --> driverForm
+    driverForm --> submitReq --> notifyFiller
+    submitReq -.-> cancelled
+    richMenu -->|"คนเติม"| fillerForm
+    notifyFiller --> fillerForm --> fillSubmit
+
+    subgraph repSec ["แจ้งซ่อม (คนขับ / จัดซื้อ / ผู้บริหาร)"]
+        repForm[/"คนขับ: ชื่อ / รุ่นรถ / อาการ / สาเหตุ<br>ไมค์ / รอบเช็คระยะ / รูปอาการเสีย<br>ระดับ: ด่วน / ปกติ / รอได้"/]
+        urgent{"ด่วน?<br>รถหยุดงาน"}
+        urgentLine["แจ้งผู้บริหารทันที"]
+        quote[/"จัดซื้อ: ใส่ใบเสนอราคา"/]
+        execApprove{"ผู้บริหารอนุมัติ<br>ผ่าน LINE?"}
+        rejectNotify["แจ้งคนขับ ไม่อนุมัติ"]
+        purForm[/"จัดซื้อ: รายละเอียดค่าซ่อม<br>แนบบิล + รูป"/]
+        repairing["สถานะ: กำลังซ่อม"]
+        repDone["จัดซื้อกด ซ่อมเสร็จ"]
+        accept{"คนขับ<br>ตรวจรับรถ?"}
+        reopen["แจ้งจัดซื้อ ซ่อมไม่เรียบร้อย"]
+        closeJob(["ปิดงานซ่อม"])
+    end
+
+    richMenu -->|"คนขับ: แจ้งซ่อม"| repForm
+    richMenu -->|"จัดซื้อ"| quote
+    repForm --> urgent
+    urgent -->|"ด่วน"| urgentLine --> quote
+    urgent -->|"ไม่ด่วน"| quote
+    quote --> execApprove
+    execApprove -->|"ไม่อนุมัติ"| rejectNotify
+    execApprove ==>|"อนุมัติ"| purForm
+    purForm ==> expressRep
+    expressRep --> repairing --> repDone --> accept
+    accept -->|"ไม่ผ่าน"| reopen
+    reopen -.-> repairing
+    accept -->|"ผ่าน"| closeJob
+
+    db[("Database<br>ข้อมูลหลัก")]
+    master[("ข้อมูลรถหลัก<br>รุ่น / ลิตรต่อชม. / ความจุถัง<br>รอบเช็คระยะ")]
+    gsheet["Google Sheets<br>ดูอย่างเดียว"]
+
+    attSave --> db
+    submitReq --> db
+    fillSubmit --> db
+    repForm --> db
+    purForm --> db
+    db -->|"Sync"| gsheet
+
+    subgraph chkSec ["ตรวจอัตโนมัติ"]
+        forgotOut{"ถึงเวลาแล้ว<br>ยังไม่ออกงาน?"}
+        fuelCheck{"น้ำมันผิดเกณฑ์?<br>รวมเทียบชม.ทำงาน<br>กับชม.เครื่อง"}
+        pmCheck{"ใกล้รอบ<br>เช็คระยะ?"}
+    end
+
+    alert["แจ้งเตือนผิดปกติ<br>LINE กลุ่ม Office"]
+    forgotLine["เตือนคนขับ + แจ้ง Office"]
+    pmLine["เตือนคนขับ / จัดซื้อ<br>นัดเช็คระยะ เปิดแจ้งซ่อมได้"]
+
+    db --> forgotOut
+    db --> fuelCheck
+    db --> pmCheck
+    master -.-> fuelCheck
+    master -.-> pmCheck
+    forgotOut -->|"ใช่"| forgotLine
+    fuelCheck -->|"พบ"| alert
+    pmCheck -->|"ใช่"| pmLine
+
+    subgraph offSec ["Office / รายงาน"]
+        fuelReview["Office ตรวจรายการน้ำมัน<br>รายการผิดปกติขึ้นก่อน"]
+        fuelApprove{"อนุมัติ?"}
+        fixBack["ส่งกลับให้คนเติมแก้ไข<br>แล้วส่งตรวจใหม่"]
+        attReport["รีพอร์ตเข้างาน / ออกงาน"]
+        assetPage["หน้าสินทรัพย์ต่อคัน<br>ประวัติน้ำมัน / ซ่อม / ชม.ทำงาน"]
+        costDash["Dashboard ต้นทุนต่อคัน<br>น้ำมัน + ค่าซ่อม ต่อเดือน"]
+        summary["สรุปรายวัน / สัปดาห์<br>ส่งเข้า LINE กลุ่ม Office"]
+    end
+
+    richMenu -->|"Office"| fuelReview
+    richMenu -->|"ผู้บริหาร / บัญชี"| costDash
+    fuelCheck -->|"ปกติ"| fuelReview
+    alert --> fuelReview
+    fuelReview --> fuelApprove
+    fuelApprove -->|"ไม่อนุมัติ"| fixBack
+    fuelApprove ==>|"อนุมัติ"| expressFuel
+    db --> attReport
+    db --> assetPage
+    db --> costDash
+    costDash -.-> summary
+
+    expressFuel["Express: PK / H3 / R3<br>เติมน้ำมัน"]
+    expressRep["Express: เปิด PO / H3 / R3<br>อัตโนมัติ + แจ้ง LINE<br>คนขับ / ผู้บริหาร / บัญชี"]
+    acctCheck["บัญชีตรวจเอกสาร<br>ใน Express"]
+    expressFuel -.-> acctCheck
+    expressRep -.-> acctCheck
+
+    style attSec fill:#EAF5FF,stroke:#3DADFF
+    style fuelSec fill:#FFF6DE,stroke:#FFC943
+    style repSec fill:#FDEBF5,stroke:#F849C1
+    style offSec fill:#F0E9FF,stroke:#874FFF
+    style chkSec fill:#F5F5F5,stroke:#B3B3B3
+    style expressFuel fill:#CDF4D3,stroke:#66D575
+    style expressRep fill:#CDF4D3,stroke:#66D575
+    style acctCheck fill:#CDF4D3,stroke:#66D575
+    style alert fill:#FFCDC2,stroke:#FF7556
+    style forgotLine fill:#FFCDC2,stroke:#FF7556
+    style pmLine fill:#FFE0C2,stroke:#FF9E42
+    style urgentLine fill:#FFCDC2,stroke:#FF7556
+    style rejectNotify fill:#FFCDC2,stroke:#FF7556
+    style blockOut fill:#FFE0C2,stroke:#FF9E42
+    style fixBack fill:#FFE0C2,stroke:#FF9E42
+    style reopen fill:#FFE0C2,stroke:#FF9E42
+    style db fill:#E8E8E8,stroke:#999
+    style master fill:#E8E8E8,stroke:#999
+    style gsheet fill:#E6F4EA,stroke:#34A853
+</script>
+
+<script type="text/plain" data-diagram="d-login">
+flowchart LR
+    lineOA(["เปิด LINE OA"])
+    roleCheck{"ผูก LINE ID<br>กับบทบาทแล้ว?"}
+    register[/"ลงทะเบียน"/]
+    officeOk["Office อนุมัติบทบาท"]
+    richMenu["เห็น Rich Menu<br>ของบทบาทตัวเอง"]
+    webapp(["เข้าหน้าเว็บแอป<br>ของบทบาทนั้น"])
+    lineOA --> roleCheck
+    roleCheck -->|"ยัง"| register --> officeOk --> richMenu
+    roleCheck -->|"แล้ว"| richMenu
+    richMenu --> webapp
+    class officeOk,richMenu cSys
+</script>
+
+<script type="text/plain" data-diagram="d-driver-att">
+flowchart TD
+    m(["Rich Menu: เข้างาน"])
+    choose{"เข้างาน<br>หรือ ออกงาน?"}
+    hasIn{"วันนี้<br>เข้างานแล้ว?"}
+    blockOut["ระบบแจ้ง:<br>ให้กดเข้างานก่อน"]
+    photo[/"อัปโหลดรูปที่มี<br>วันเวลา / สถานที่"/]
+    saveAtt["ระบบบันทึกเวลา<br>+ พิกัด GPS"]
+    forgot["LINE เตือน:<br>ถึงเวลาแล้วยังไม่ออกงาน"]
+    m --> choose
+    choose -->|"เข้างาน"| photo
+    choose -->|"ออกงาน"| hasIn
+    hasIn -->|"ยัง"| blockOut
+    hasIn -->|"แล้ว"| photo
+    photo --> saveAtt
+    saveAtt -.->|"ลืมกดออกงาน"| forgot
+    class saveAtt cSys
+    class forgot cLine
+    class blockOut cBad
+</script>
+
+<script type="text/plain" data-diagram="d-driver-fuel">
+flowchart TD
+    m(["Rich Menu: เติมน้ำมัน"])
+    rem{"เคยติ๊ก<br>จำข้อมูลไว้?"}
+    prefill["ระบบใส่ชื่อ / รุ่นรถ<br>ที่จำไว้ให้ (แก้ได้)"]
+    car[/"กรอกชื่อ / รุ่นรถ<br>ติ๊ก จำข้อมูลไว้ ได้"/]
+    hours[/"กรอกชั่วโมงเครื่อง<br>+ ถ่ายรูปหน้าปัด"/]
+    submit["ส่งคำขอ<br>สถานะ: รอเติม"]
+    cancelReq(["คนขับยกเลิกคำขอ"])
+    notify["ระบบแจ้งคนเติม<br>ผ่าน LINE"]
+    filled(["คนเติมบันทึกแล้ว<br>สถานะ: เติมแล้ว"])
+    m --> rem
+    rem -->|"ใช่"| prefill --> hours
+    rem -->|"ไม่"| car --> hours
+    hours --> submit --> notify --> filled
+    submit -.-> cancelReq
+    class prefill,notify,filled cSys
+</script>
+
+<script type="text/plain" data-diagram="d-driver-rep">
+flowchart TD
+    pm["LINE เตือน:<br>ใกล้รอบเช็คระยะ"]
+    m(["Rich Menu: แจ้งซ่อม"])
+    form[/"กรอกชื่อ / รุ่นรถ / อาการ / สาเหตุ<br>ไมค์ / รอบเช็คระยะ"/]
+    extra[/"แนบรูปอาการเสีย<br>เลือก ด่วน / ปกติ / รอได้"/]
+    submit["ส่งแจ้งซ่อม"]
+    result{"ผู้บริหาร<br>อนุมัติ?"}
+    rejected(["LINE แจ้ง: ไม่อนุมัติ"])
+    poNote["LINE แจ้ง: เปิด PO แล้ว<br>รถเข้าซ่อม"]
+    doneNote["LINE แจ้ง: ซ่อมเสร็จ"]
+    accept{"ตรวจรับรถ<br>ผ่าน?"}
+    reopen["กดไม่ผ่าน<br>ระบบแจ้งจัดซื้อให้ซ่อมต่อ"]
+    closeJob(["กดรับรถ ปิดงานซ่อม"])
+    pm -.-> m
+    m --> form --> extra --> submit --> result
+    result -->|"ไม่อนุมัติ"| rejected
+    result -->|"อนุมัติ"| poNote --> doneNote --> accept
+    accept -->|"ไม่ผ่าน"| reopen
+    reopen -.-> doneNote
+    accept -->|"ผ่าน"| closeJob
+    class pm,poNote,doneNote cLine
+    class result cSys
+    class rejected cBad
+</script>
+
+<script type="text/plain" data-diagram="d-filler">
+flowchart TD
+    lineIn["LINE แจ้ง:<br>มีคำขอเติมน้ำมัน"]
+    remind["LINE เตือนซ้ำ:<br>คำขอค้างเกินเวลา"]
+    menu(["Rich Menu: คนเติม"])
+    page["เปิดหน้าคนเติม<br>เลือกคำขอที่รอเติม"]
+    form[/"กรอกลิตร / ราคาต่อลิตร / ยอดเงิน<br>เลือก ปั๊ม หรือ ถังกลาง"/]
+    slip[/"อัปโหลดรูปสลิป<br>+ กรอกเลขไมค์"/]
+    save["กดบันทึก<br>สถานะ: เติมแล้ว"]
+    review{"Office<br>อนุมัติ?"}
+    fix["LINE แจ้ง:<br>ส่งกลับแก้ไข"]
+    ok(["อนุมัติแล้ว จบงาน"])
+    lineIn --> page
+    remind -.-> page
+    menu --> page
+    page --> form --> slip --> save --> review
+    review -->|"ไม่อนุมัติ"| fix
+    fix -.-> form
+    review -->|"อนุมัติ"| ok
+    class lineIn,remind cLine
+    class review cSys
+    class fix cBad
+</script>
+
+<script type="text/plain" data-diagram="d-office-fuel">
+flowchart TD
+    saved["คนเติมบันทึกรายการ"]
+    chk{"ระบบตรวจ:<br>ผิดเกณฑ์?"}
+    alert["LINE กลุ่ม Office:<br>แจ้งเตือนผิดปกติ"]
+    list["หน้าตรวจรายการน้ำมัน<br>รายการผิดปกติขึ้นก่อน"]
+    detail["ดูสลิป / เลขไมค์ / รูปหน้าปัด<br>เทียบกับค่ามาตรฐาน"]
+    approve{"อนุมัติ?"}
+    express["Express:<br>บันทึก PK / H3 / R3"]
+    back["ส่งกลับให้คนเติมแก้ไข"]
+    saved --> chk
+    chk -->|"พบ"| alert --> list
+    chk -->|"ปกติ"| list
+    list --> detail --> approve
+    approve ==>|"อนุมัติ"| express
+    approve -->|"ไม่อนุมัติ"| back
+    back -.->|"คนเติมแก้แล้วส่งใหม่"| saved
+    class saved,chk cSys
+    class alert,back cBad
+    class express cExp
+</script>
+
+<script type="text/plain" data-diagram="d-office-menu">
+flowchart LR
+    menu(["Rich Menu: Office"])
+    forgot["LINE แจ้ง:<br>คนขับลืมออกงาน"]
+    sum["LINE กลุ่ม:<br>สรุปรายวัน / สัปดาห์"]
+    reg["อนุมัติบทบาทผู้ใช้ใหม่"]
+    att["รีพอร์ตเข้างาน / ออกงาน<br>เวลา / ชม.ทำงาน / รูป / พิกัด"]
+    asset["หน้าสินทรัพย์ต่อคัน<br>น้ำมัน / ซ่อม / ชม.ทำงาน"]
+    dash["Dashboard ต้นทุนต่อคัน<br>น้ำมัน + ค่าซ่อม ต่อเดือน"]
+    menu ---> reg
+    menu ---> att
+    menu ---> asset
+    menu ---> dash
+    forgot -.-> att
+    sum -.-> dash
+    class forgot,sum cLine
+</script>
+
+<script type="text/plain" data-diagram="d-exec-rep">
+flowchart TD
+    urgent["LINE แจ้งทันที:<br>งานด่วน รถหยุดงาน"]
+    quoteWait["จัดซื้อใส่ใบเสนอราคา"]
+    req["LINE: ขออนุมัติซ่อม<br>พร้อมใบเสนอราคา"]
+    view["ดูอาการ / สาเหตุ / รูป<br>และราคาประเมิน"]
+    dec{"อนุมัติ?"}
+    rejectOut(["กดไม่อนุมัติ<br>ระบบแจ้งคนขับ"])
+    approveOut["กดอนุมัติ<br>ระบบแจ้งจัดซื้อ"]
+    po["LINE แจ้ง:<br>เปิด PO / H3 / R3 แล้ว"]
+    urgent -.-> quoteWait
+    quoteWait --> req --> view --> dec
+    dec -->|"ไม่อนุมัติ"| rejectOut
+    dec ==>|"อนุมัติ"| approveOut --> po
+    class urgent,req,po cLine
+    class quoteWait cSys
+    class rejectOut cBad
+</script>
+
+<script type="text/plain" data-diagram="d-exec-menu">
+flowchart LR
+    menu(["Rich Menu: ผู้บริหาร"])
+    dash["Dashboard ต้นทุนต่อคัน<br>น้ำมัน + ค่าซ่อม ต่อเดือน"]
+    asset["หน้าสินทรัพย์ต่อคัน<br>ประวัติน้ำมัน / ซ่อม / ชม.ทำงาน"]
+    menu --> dash
+    menu --> asset
+</script>
+
+<script type="text/plain" data-diagram="d-purchase">
+flowchart TD
+    pm["LINE เตือน:<br>รถใกล้รอบเช็คระยะ"]
+    newReq["LINE แจ้ง:<br>มีแจ้งซ่อมใหม่"]
+    quote[/"ใส่ใบเสนอราคา<br>ราคาประเมิน"/]
+    wait{"ผู้บริหาร<br>อนุมัติ?"}
+    stopJob(["ไม่อนุมัติ ปิดรายการ"])
+    lineOk["LINE แจ้ง:<br>อนุมัติแล้ว"]
+    cost[/"ใส่รายละเอียดค่าซ่อม<br>แนบบิล + รูป"/]
+    express["Express: เปิด PO / H3 / R3<br>อัตโนมัติ"]
+    notifyAll["ระบบแจ้ง LINE<br>คนขับ / ผู้บริหาร / บัญชี"]
+    repairing["สถานะ: กำลังซ่อม"]
+    finish["กด ซ่อมเสร็จ"]
+    accept{"คนขับ<br>ตรวจรับผ่าน?"}
+    closeJob(["ปิดงานซ่อม"])
+    redo["LINE แจ้ง:<br>ซ่อมไม่เรียบร้อย"]
+    pm -.->|"คนขับเปิดแจ้งซ่อม"| newReq
+    newReq --> quote --> wait
+    wait -->|"ไม่อนุมัติ"| stopJob
+    wait ==>|"อนุมัติ"| lineOk --> cost
+    cost ==> express --> notifyAll --> repairing --> finish --> accept
+    accept -->|"ผ่าน"| closeJob
+    accept -->|"ไม่ผ่าน"| redo
+    redo -.-> repairing
+    class pm,newReq,lineOk cLine
+    class wait,accept,notifyAll,repairing cSys
+    class express cExp
+    class stopJob,redo cBad
+</script>
+
+<script type="text/plain" data-diagram="d-account">
+flowchart TD
+    lineIn["LINE แจ้ง: เปิด PO / H3 / R3<br>งานซ่อมแล้ว"]
+    fuelDoc["เอกสารน้ำมัน PK / H3 / R3<br>ที่ Office อนุมัติแล้ว"]
+    chkDoc["ตรวจเอกสารใน Express<br>เทียบกับบิล + รูป"]
+    menu(["Rich Menu: บัญชี"])
+    dash["Dashboard ต้นทุนต่อคัน<br>น้ำมัน + ค่าซ่อม ต่อเดือน"]
+    asset["หน้าสินทรัพย์ต่อคัน"]
+    lineIn --> chkDoc
+    fuelDoc -.-> chkDoc
+    menu --> dash
+    menu --> asset
+    class lineIn cLine
+    class fuelDoc,chkDoc cExp
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  const CLASSDEFS = [
+    '    classDef cLine fill:#FFF6DE,stroke:#FFC943',
+    '    classDef cSys fill:#EFEFEF,stroke:#9a9a9a',
+    '    classDef cExp fill:#CDF4D3,stroke:#66D575',
+    '    classDef cBad fill:#FFCDC2,stroke:#FF7556'
+  ].join('\n');
+  const sources = {};
+
+  // ซูมแผนภาพรวม
+  let bigNatural = 0, bigZoom = 1;
+  function applyBigZoom() {
+    const svg = document.querySelector('#d-all svg');
+    if (!svg || !bigNatural) return;
+    svg.style.maxWidth = 'none';
+    svg.style.minWidth = '0';
+    svg.style.width = Math.round(bigNatural * bigZoom) + 'px';
+    document.getElementById('zoomLabel').textContent = Math.round(bigZoom * 100) + '%';
+  }
+  function setBigZoom(z) { bigZoom = Math.min(2.5, Math.max(0.15, z)); applyBigZoom(); }
+  document.getElementById('zoomIn').onclick = () => setBigZoom(bigZoom + 0.15);
+  document.getElementById('zoomOut').onclick = () => setBigZoom(bigZoom - 0.15);
+  document.getElementById('zoomFull').onclick = () => setBigZoom(1);
+  (function () {
+    const box = document.getElementById('d-all');
+    let drag = null;
+    box.style.cursor = 'grab';
+    box.addEventListener('mousedown', e => { drag = { x: e.clientX, y: e.clientY, l: box.scrollLeft, t: box.scrollTop }; box.style.cursor = 'grabbing'; e.preventDefault(); });
+    window.addEventListener('mousemove', e => { if (!drag) return; box.scrollLeft = drag.l - (e.clientX - drag.x); box.scrollTop = drag.t - (e.clientY - drag.y); });
+    window.addEventListener('mouseup', () => { drag = null; box.style.cursor = 'grab'; });
+  })();
+  document.getElementById('zoomFit').onclick = () => {
+    const w = document.getElementById('d-all').clientWidth - 20;
+    if (bigNatural) setBigZoom(w / bigNatural);
+  };
+
+  function showFallback(target, code) {
+    target.innerHTML = '';
+    const pre = document.createElement('pre');
+    pre.className = 'fallback';
+    pre.textContent = code;
+    target.appendChild(pre);
+  }
+
+  async function renderAll() {
+    const blocks = document.querySelectorAll('script[data-diagram]');
+    const hasMermaid = typeof mermaid !== 'undefined';
+    if (hasMermaid) {
+      mermaid.initialize({ startOnLoad:false, theme:'base', securityLevel:'loose',
+        themeVariables:{ fontFamily:'Sarabun, sans-serif', fontSize:'15px', primaryColor:'#ffffff', primaryBorderColor:'#9a9a9a', lineColor:'#555' },
+        flowchart:{ curve:'basis', htmlLabels:true, nodeSpacing:30, rankSpacing:40, useMaxWidth:true } });
+      try {
+        await Promise.race([
+          Promise.all([document.fonts.load('15px Sarabun'), document.fonts.load('600 15px Sarabun'), document.fonts.ready]),
+          new Promise(r => setTimeout(r, 2000))
+        ]);
+      } catch (e) {}
+    } else {
+      document.getElementById('warn').style.display = 'block';
+    }
+    let n = 0, failed = 0;
+    for (const b of blocks) {
+      const id = b.dataset.diagram;
+      const target = document.getElementById(id);
+      const code = b.textContent.trim() + '\n' + CLASSDEFS;
+      sources[id] = code;
+      if (!hasMermaid) { showFallback(target, code); continue; }
+      try {
+        const out = await mermaid.render('mm' + (n++), code);
+        target.innerHTML = out.svg;
+        // อย่าย่อเล็กเกินไปบนจอแคบ ให้เลื่อนซ้ายขวาแทน
+        const svg = target.querySelector('svg');
+        const natural = svg ? parseFloat(svg.style.maxWidth) : 0;
+        if (id === 'd-all') { bigNatural = natural; bigZoom = 1; applyBigZoom(); }
+        else if (natural) svg.style.minWidth = Math.round(natural * 0.8) + 'px';
+      } catch (e) {
+        failed++;
+        showFallback(target, code);
+      }
+    }
+    document.body.dataset.rendered = String(n - failed);
+    document.body.dataset.failed = String(failed);
+  }
+  renderAll();
+
+  document.querySelectorAll('nav button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const el = document.getElementById(btn.dataset.go);
+      if (el) el.scrollIntoView({ behavior:'smooth', block:'start' });
+    });
+  });
+
+  document.querySelectorAll('button[data-copy]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const old = 'คัดลอกโค้ด';
+      try { await navigator.clipboard.writeText(sources[btn.dataset.copy] || ''); btn.textContent = 'คัดลอกแล้ว'; }
+      catch (e) { btn.textContent = 'คัดลอกไม่ได้'; }
+      setTimeout(() => { btn.textContent = old; }, 1500);
+    });
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "dev", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev"], "port": 3000 },
+    { "name": "dev-e2e", "runtimeExecutable": "node", "runtimeArgs": ["var/e2e/dev-tee.mjs"], "port": 3001 }
+  ]
+}

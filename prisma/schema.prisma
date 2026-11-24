@@ -1,0 +1,215 @@
+// ระบบจัดการรถ: เข้างาน / เติมน้ำมัน / แจ้งซ่อม (flowchart v6).
+// The database is the source of truth; Google Sheets only reads CSV exports.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// One person, identified by their LINE user id (LIFF login).
+model User {
+  id                String    @id @default(cuid())
+  lineUserId        String    @unique
+  displayName       String    @default("") // LINE profile name
+  name              String // full name typed at registration
+  phone             String    @default("")
+  requestedRole     String    @default("") // what they asked for at registration
+  roles             String[] // driver | filler | office | exec | purchasing | accounting
+  status            String    @default("pending") // pending | active | disabled
+  approvedBy        String?
+  approvedAt        DateTime?
+  rememberVehicleId String? // "จำข้อมูลไว้" on the fuel / repair forms
+  aiKeyHash         String?   @unique // sha256 of this user's เลขา AI key (the key is shown once, /ai)
+  aiKeyAt           DateTime? // when that key was made
+  createdAt         DateTime  @default(now())
+
+  attendances Attendance[]
+  fuelAsked   FuelRequest[]   @relation("fuelDriver")
+  fuelFilled  FuelRequest[]   @relation("fuelFiller")
+  repairs     RepairRequest[]
+}
+
+// ข้อมูลรถหลัก: model, standard litres per engine hour, tank size, service interval.
+model Vehicle {
+  id            String   @id @default(cuid())
+  code          String   @unique // plate / fleet number shown everywhere
+  model         String   @default("") // รุ่น
+  litersPerHour Decimal? @db.Decimal(8, 2) // standard for this model
+  tankLiters    Decimal? @db.Decimal(8, 2)
+  pmEveryHours  Int? // service interval in engine hours (รอบเช็คระยะ)
+  pmLastHours   Decimal? @db.Decimal(10, 1) // engine hours at the last service
+  expressItem   String   @default("") // Express STMAS code booked for this vehicle's fuel
+  expressDep    String   @default("") // Express department (ISTAB 50) of that item
+  active        Boolean  @default(true)
+  note          String   @default("")
+  createdAt     DateTime @default(now())
+
+  fuelRequests FuelRequest[]
+  repairs      RepairRequest[]
+}
+
+// เข้างาน / ออกงาน. One row per person per Bangkok work date (date of clock-in).
+model Attendance {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id])
+  workDate      DateTime  @db.Date
+  inAt          DateTime
+  inPhoto       String // storage key
+  inLat         Float?
+  inLng         Float?
+  outAt         DateTime?
+  outPhoto      String?
+  outLat        Float?
+  outLng        Float?
+  forgotAlertAt DateTime? // "ถึงเวลาแล้วยังไม่ออกงาน" sent
+
+  @@unique([userId, workDate])
+  @@index([workDate])
+}
+
+// เติมน้ำมัน: waiting (รอเติม) -> filled (เติมแล้ว) -> approved (อนุมัติแล้ว)
+//             filled -> returned (ส่งกลับแก้ไข) -> filled ...;  any open -> cancelled
+model FuelRequest {
+  id          String    @id @default(cuid())
+  no          Int       @unique @default(autoincrement())
+  status      String    @default("waiting")
+  driverId    String
+  driver      User      @relation("fuelDriver", fields: [driverId], references: [id])
+  vehicleId   String
+  vehicle     Vehicle   @relation(fields: [vehicleId], references: [id])
+  engineHours Decimal   @db.Decimal(10, 1) // the driver's reading, replaced by the filler's at the pump
+  dashPhoto   String
+  driverHours    Decimal? @db.Decimal(10, 1) // engine hours the driver typed when asking (kept as typed)
+  driverOdometer Decimal? @db.Decimal(12, 1) // เลขไมค์ the driver typed when asking
+  odoPhoto       String? // the driver's photo of the odometer
+  driverName  String    @default("") // name typed on the form when it is not the sender's own ("" = driver.name)
+  createdAt   DateTime  @default(now())
+  remindedAt  DateTime? // last "ค้างเกินเวลา" reminder to the fillers
+  remindCount Int       @default(0)
+
+  // คนเติม
+  fillerId      String?
+  filler        User?     @relation("fuelFiller", fields: [fillerId], references: [id])
+  liters        Decimal?  @db.Decimal(10, 2)
+  pricePerLiter Decimal?  @db.Decimal(10, 4)
+  amount        Decimal?  @db.Decimal(12, 2) // paid, VAT included
+  source        String? // pump | tank (ถังกลาง)
+  supplierCode  String    @default("") // Express supplier of the pump
+  supplierName  String    @default("")
+  invoice       String    @default("") // tax invoice no. on the slip (H3 "เลขที่บิล")
+  slipPhoto     String?
+  slipRead      Json? // what the AI read from slipPhoto (src/lib/slip.ts); null = not read
+  odometer      Decimal?  @db.Decimal(12, 1) // เลขไมค์ read by the filler at the pump
+  fillDashPhoto String? // the filler's dashboard photo at the pump
+  filledAt      DateTime?
+  flags         Json      @default("[]") // auto-check findings: [{ code, text }]
+
+  // Office
+  reviewedBy String?
+  reviewedAt DateTime?
+  returnNote String    @default("")
+
+  express ExpressOrder?
+
+  @@index([status])
+  @@index([vehicleId, createdAt])
+}
+
+// แจ้งซ่อม: quote (รอใบเสนอราคา) -> approval (รออนุมัติ) -> approved (รอค่าซ่อม)
+//          -> repairing (กำลังซ่อม) -> done (ซ่อมเสร็จ รอตรวจรับ) -> closed (ปิดงาน)
+//          approval -> rejected;  approved / rejected -> approval with a new quote (cost > 5% above it, or rejected)
+//          done -> repairing when the driver does not accept;  done -> closed by purchasing / office (with a reason)
+//          quote / approval / approved -> cancelled by purchasing / office (with a reason)
+model RepairRequest {
+  id         String   @id @default(cuid())
+  no         Int      @unique @default(autoincrement())
+  status     String   @default("quote")
+  driverId   String
+  driver     User     @relation(fields: [driverId], references: [id])
+  driverName String   @default("") // name typed on the form when it is not the sender's own ("" = driver.name)
+  vehicleId  String
+  vehicle    Vehicle  @relation(fields: [vehicleId], references: [id])
+  symptom    String
+  cause      String   @default("")
+  odometer   Decimal? @db.Decimal(12, 1) // ไมค์ / ชั่วโมงเครื่อง
+  pmRound    String   @default("") // รอบเช็คระยะ
+  photos     String[]
+  urgency    String // urgent | normal | canwait
+  fromPm     Boolean  @default(false) // opened from a service-due reminder
+  createdAt  DateTime @default(now())
+
+  // จัดซื้อ: ใบเสนอราคา
+  quoteAmount Decimal?  @db.Decimal(12, 2) // VAT included
+  quoteNote   String    @default("")
+  quoteFiles  String[]
+  quotedBy    String?
+  quotedAt    DateTime?
+
+  // ผู้บริหาร
+  decidedBy    String?
+  decidedAt    DateTime?
+  decisionNote String    @default("")
+
+  // จัดซื้อ: รายละเอียดค่าซ่อม (what Express books)
+  costAmount   Decimal?  @db.Decimal(12, 2) // VAT included
+  costDetail   String    @default("")
+  billFiles    String[]
+  supplierCode String    @default("") // Express supplier (garage)
+  supplierName String    @default("")
+  itemCode     String    @default("") // Express service item
+  invoice      String    @default("") // tax invoice no.
+  costedBy     String?
+  costedAt     DateTime?
+
+  doneAt      DateTime?
+  reopenCount Int       @default(0)
+  reopenNote  String    @default("")
+  closedAt    DateTime? // closed or cancelled
+
+  // จัดซื้อ / Office: who cancelled it or closed it for the driver, and why (at closedAt)
+  endedBy String?
+  endNote String  @default("")
+
+  express ExpressOrder?
+
+  @@index([status])
+  @@index([vehicleId, createdAt])
+}
+
+// What the office PC writes into Express Accounting, copied at queue time so a
+// later edit of the request cannot change what Express books.
+//   fuel:   PK (+ H3) -> R3        repair: PO + H3 -> R3
+// status:   queued (to write) | written (PK/PO [+H3] in Express) | error | cancelled
+// r3Status: null | queued | waiting (no H3 yet) | force (admin: not a duplicate) | error | done
+model ExpressOrder {
+  id              String         @id @default(cuid())
+  kind            String // fuel | repair
+  fuelRequestId   String?        @unique
+  fuelRequest     FuelRequest?   @relation(fields: [fuelRequestId], references: [id])
+  repairRequestId String?        @unique
+  repairRequest   RepairRequest? @relation(fields: [repairRequestId], references: [id])
+  status          String         @default("queued")
+  payload         Json // the order handed to the office PC
+  poNo            String? // PK… (fuel) / PO… (repair)
+  h3No            String? // H3 (fuel) / RR (repair)
+  error           String?
+  r3Status        String?
+  r3No            String?
+  r3Error         String?
+  createdBy       String
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([kind, status])
+  @@index([r3Status])
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
