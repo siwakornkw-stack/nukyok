@@ -5,7 +5,10 @@
 
 ## โค้ดเก็บอย่างไร
 
-- ไม่มี git remote: ก่อนวันนี้โฟลเดอร์นี้ไม่ใช่ git repo เลย ใช้ `git init` และ commit แรกวันที่ย้าย ประวัติจึงเริ่มที่ commit นั้น
+- repo: https://github.com/siwakornkw-stack/nukyok (**public**, push ครั้งแรก 24 พ.ย. 2569) ที่เครื่องใหม่:
+  `git clone https://github.com/siwakornkw-stack/nukyok.git D:\nukyok` (หรือถ้า clone จากไฟล์ bundle ไว้แล้ว
+  `git remote set-url origin https://github.com/siwakornkw-stack/nukyok.git`). ก่อนวันนั้นไม่เคยใช้ git ประวัติจึงเริ่มที่ commit แรก
+- repo เป็น public: ห้าม commit ค่าลับ (.env, key, token, รหัส LINE / Gemini) หรือข้อมูลส่วนตัวของพนักงาน ค่าลับอยู่ใน `.env` บนเซิร์ฟเวอร์เท่านั้น
 - ที่ไม่อยู่ใน git (ดู `.gitignore`): `node_modules`, `.next`, `.env`, และ `var/` ยกเว้น `var/e2e` (สคริปต์ e2e + รูป/PDF ทดสอบใน
   `var/e2e/fixtures`). `var/pg` (ฐานข้อมูลทดสอบ), `var/uploads`, zip ตัวเชื่อม (มีรหัสลับ) ไม่ต้องย้าย สร้างใหม่ได้
 - โค้ดที่รันจริงอยู่บนเซิร์ฟเวอร์ (`/home/ubuntu/nukyok-releases/<เวลา>`) และตัวเชื่อมที่ `C:\nukyok-agent` บนเครื่อง Office
