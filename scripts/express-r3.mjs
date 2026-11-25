@@ -9,11 +9,11 @@
 // number (REFNUM) is reported, not written again. Every write leaves a ledger in
 // var/r3-ledger/<PK>.json (what was written, or what was rolled back).
 import { spawnSync } from "child_process";
-import { writeFileSync, mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync } from "fs";
+import { writeFileSync, mkdtempSync, rmSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
 import { fileURLToPath } from "url";
-import { readDbf } from "./express/dbf.mjs";
+import { readDbf, stuckLedger, stuckText, ledgerTime, noResult } from "./express/dbf.mjs";
 import { planR3 } from "./express/r3.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -29,28 +29,23 @@ export const LEDGER_DIR = path.resolve("var/r3-ledger");
 export function writeR3(dir, plan) {
   mkdirSync(LEDGER_DIR, { recursive: true });
   const ledger = path.join(LEDGER_DIR, `${plan.pkNo}.json`);
-  // A run that died half way ("writing") or could not undo itself needs a person
-  // to look at Express before anything is written for this PK again.
-  if (existsSync(ledger)) {
-    let prev = {};
-    try {
-      prev = JSON.parse(readFileSync(ledger, "utf8").replace(/^﻿/, ""));
-    } catch {}
-    if (prev.status === "writing" || prev.status === "ROLLBACK-FAILED") {
-      return { ok: false, stuck: true, error: `R3 ของ ${plan.pkNo} เขียนค้างไว้ไม่สมบูรณ์ (${prev.status}${prev.docNo ? ` ${prev.docNo}` : ""}) ต้องตรวจใน Express ก่อน: ${ledger}` };
-    }
-  }
+  // A run that died half way ("writing"), could not undo itself, or left a ledger that cannot
+  // be read needs a person to look at Express before anything is written for this PK again.
+  const prev = stuckLedger(ledger);
+  if (prev) return { ok: false, stuck: true, error: stuckText(prev, ledger) };
   const tmp = mkdtempSync(path.join(tmpdir(), "r3-"));
   try {
     const planFile = path.join(tmp, "plan.json");
     writeFileSync(planFile, JSON.stringify(plan), "utf8");
+    const before = ledgerTime(ledger);
     const r = spawnSync(
       PS32,
       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(here, "express", "r3-write.ps1"), "-Dir", dir, "-PlanFile", planFile, "-Ledger", ledger],
       { encoding: "utf8", timeout: 120000 }
     );
     const line = (r.stdout || "").split(/\r?\n/).find((l) => l.startsWith("RESULT:"));
-    if (!line) return { ok: false, error: `writer gave no result: ${(r.stderr || r.stdout || r.error?.message || "").trim().slice(0, 300)}` };
+    // Killed by the timeout above (no rollback) or never started: its ledger says how far it got.
+    if (!line) return noResult(ledger, before, r, (l) => ({ docNo: l.docNo }));
     const res = line.slice(7);
     if (res.startsWith("OK:")) return { ok: true, docNo: res.slice(3).trim() };
     if (res.startsWith("EXISTS:")) return { ok: true, docNo: res.slice(7).trim(), existed: true };

@@ -21,18 +21,24 @@ export function h3Prefix(isoDate) {
 
 // Line maths as staff key it: litres x pump price, the rounding difference down
 // to the paid total booked as a discount (never negative: 0 of 72 October lines).
+// Counted in whole satang, the line rounded half-up like Express: in floating
+// point 44.55 x 44.90 (2000.295) rounds to 2000.29, one satang short.
 export function lineAmounts(liters, price, total) {
+  const l = Math.round(liters * 10000), t = Math.round(total * 100); // 1/10000 litre, satang
+  const line = (p) => Math.floor((l * Math.round(p * 10000) + 500000) / 1000000); // litres x price, satang
   let p = price > 0 ? price : r2(total / liters);
-  if (r2(liters * p) < total) p = Math.ceil((total / liters) * 100) / 100;
-  const disc = r2(liters * p - total);
+  if (line(p) < t) p = Math.ceil((t * 10000) / l) / 100;
+  const disc = (line(p) - t) / 100;
   const vat = r2((total * 7) / 107);
   const net = r2(total - vat);
   return { price: p, disc, total: r2(total), vat, net, xunit: r2(net / liters) };
 }
 
-// order: { id, stage, pkNo, withH3, supplier, item, dep, date, invoice, liters, price, amount }
+// order: { id, stage, pkNo, withH3, supplier, item, dep, date, invoice, liters, price, amount, force }
 // stage "pk" (when the bill is saved): the PK only. stage "h3" (once an admin
 // approved that PK, order.pkNo): its H3. An order without a stage is both at once.
+// force: Office checked Express and confirmed that the other H3 / PK of this tax
+// invoice is not this bill (one invoice split over several vehicles).
 export function planFuel(order, tables, user = "WEB") {
   if (order.stage === "pk") return planStage({ ...order, withH3: false }, tables, user, "");
   if (order.stage === "h3") {
@@ -56,16 +62,30 @@ function planStage(order, { popr, poprit, stmas, apmas, aptrn, isprd, isrun }, u
     return { status: "error", reason: `ลิตร × ราคาต่อลิตร (${r2(order.liters * order.price)}) ไม่ตรงกับยอดเงิน (${order.amount})` };
   }
 
-  // Already in Express? An H3 for this tax invoice (staff may have keyed it,
-  // perhaps under another branch's supplier code: then the amount must match)
-  // means nothing is written at all.
-  const h3 = aptrn.find(
-    (r) => r.DOCNUM.startsWith("H3") && r.REFNUM === order.invoice && r.DOCSTAT !== "C" && (r.SUPCOD === order.supplier || r2(r.NETAMT) === r2(order.amount))
-  );
+  // Already in Express? An H3 for this tax invoice with the same amount (staff
+  // may have keyed it, perhaps under another branch's supplier code) means
+  // nothing is written at all. A PK an earlier run opened for this bill (this
+  // supplier, date and invoice in "อ้างอิง", this amount and vehicle) gets only the H3.
+  const invoiceH3 = aptrn.filter((r) => r.DOCNUM.startsWith("H3") && r.REFNUM === order.invoice && r.DOCSTAT !== "C");
+  const h3 = invoiceH3.find((r) => r2(r.NETAMT) === r2(order.amount));
   if (h3) return { status: "exists", pkNo: h3.PONUM || knownPk, h3No: h3.DOCNUM };
-  const pk = knownPk
-    ? { PONUM: knownPk }
-    : popr.find((p) => p.PONUM.startsWith("PK") && p.SUPCOD === order.supplier && p.PODAT === order.date && p.YOUREF === order.invoice && p.DOCSTAT !== "C");
+  const vehicle = (ponum) => poprit.find((i) => i.PONUM === ponum)?.STKCOD ?? "";
+  const pks = knownPk ? [] : popr.filter((p) => p.PONUM.startsWith("PK") && p.SUPCOD === order.supplier && p.PODAT === order.date && p.YOUREF === order.invoice && p.DOCSTAT !== "C");
+  const pk = knownPk ? { PONUM: knownPk } : pks.find((p) => r2(p.NETAMT) === r2(order.amount) && vehicle(p.PONUM) === order.item);
+  // The invoice of this supplier in another H3, or in another PK of this date: one invoice
+  // split over several vehicles, or this bill keyed with another amount. A person checks
+  // Express and keys it, or confirms it is not this bill (force). fuel-write.ps1 says the same.
+  const split = invoiceH3.find((r) => r.SUPCOD === order.supplier);
+  const other = !pk && pks[0];
+  if ((split || other) && order.force !== true) {
+    const theirs = split ? `${split.DOCNUM} (ยอด ${r2(split.NETAMT).toFixed(2)})` : `${other.PONUM} (รถ ${vehicle(other.PONUM)} ยอด ${r2(other.NETAMT).toFixed(2)})`;
+    return {
+      status: "error",
+      reason:
+        `อาจซ้ำ: ใบกำกับ ${order.invoice} ของผู้จำหน่ายนี้มี ${theirs} ใน Express แล้ว ไม่ตรงกับบิลนี้ (รถ ${order.item} ยอด ${r2(order.amount).toFixed(2)}) ` +
+        `อาจเป็นใบกำกับที่แบ่งเติมหลายคัน ตรวจใน Express ถ้ายังไม่มีบิลนี้ให้กด "ยืนยันว่าไม่ซ้ำ" หรือคีย์เอง`,
+    };
+  }
   const withH3 = order.withH3 && item.STKTYP === "5";
   if (pk && !withH3) return { status: "exists", pkNo: pk.PONUM, h3No: "" };
 
@@ -84,6 +104,7 @@ function planStage(order, { popr, poprit, stmas, apmas, aptrn, isprd, isrun }, u
     user,
     pkNo: pk?.PONUM || "", // existing PK: only the H3 is written
     withH3,
+    force: order.force === true, // fuel-write.ps1 re-checks the possible duplicates above unless confirmed
     h3Prefix: h3Prefix(order.date),
     supplier: { code: sup.SUPCOD, name: sup.SUPNAM, prenam: sup.PRENAM, taxId: sup.TAXID, branch: Number(sup.ORGNUM) || 0 },
     item: { code: item.STKCOD, desc: item.STKDES, unit: item.PQUCOD || "ลต" },

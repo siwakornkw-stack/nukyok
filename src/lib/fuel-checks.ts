@@ -1,5 +1,5 @@
 import { baht, dec, num } from "@/lib/format";
-import { hoursBetween } from "@/lib/time";
+import { bkkDateKey, hoursBetween, isDateKey } from "@/lib/time";
 
 // Thresholds of the automatic checks on a fuel fill (ตรวจอัตโนมัติ).
 export const FUEL_RULES = {
@@ -13,6 +13,10 @@ export const FUEL_RULES = {
 };
 
 export type FuelFlag = { code: string; text: string };
+
+// A fill's stored flags as the codes an approver is shown ("lph_high,invoice_dup"): approval sends them back, so flags
+// a re-check changed meanwhile are seen before they are approved.
+export const flagCodes = (flags: unknown) => (Array.isArray(flags) ? flags : []).map((f) => String((f as FuelFlag | null)?.code ?? "")).join(",");
 
 const signed = (n: number) => `${n > 0 ? "+" : ""}${num(Math.round(n * 10) / 10)}`;
 
@@ -102,6 +106,7 @@ export type SlipRead = {
   pricePerLiter: number | null;
   amount: number | null;
   station: string;
+  sellerTaxId: string; // digits; readings made before this field existed have none
   buyerTaxId: string;
 };
 
@@ -121,41 +126,92 @@ export function parseSlip(raw: string): SlipRead | null {
   }
   if (!o || typeof o !== "object" || Array.isArray(o)) return null;
   const j = o as Record<string, unknown>;
-  // a Buddhist-era year the model did not convert
+  // a Buddhist-era year the model did not convert; a date that does not exist (2026-02-30) is not offered as the
+  // invoice date
   const d = slipText(j.date, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const date = d ? `${Number(d[1]) > 2400 ? Number(d[1]) - 543 : d[1]}-${d[2]}-${d[3]}` : "";
   const read: SlipRead = {
     invoice: slipText(j.invoice, 40),
     replaces: slipText(j.replaces, 40),
-    date: d ? `${Number(d[1]) > 2400 ? Number(d[1]) - 543 : d[1]}-${d[2]}-${d[3]}` : "",
+    date: isDateKey(date) ? date : "",
     plate: slipText(j.plate, 40),
     liters: slipNum(j.liters),
     pricePerLiter: slipNum(j.pricePerLiter),
     amount: slipNum(j.amount),
     station: slipText(j.station, 120),
+    sellerTaxId: slipText(j.sellerTaxId, 30).replace(/\D/g, ""),
     buyerTaxId: slipText(j.buyerTaxId, 30).replace(/\D/g, ""),
   };
   return read.liters !== null || read.amount !== null || read.invoice ? read : null;
 }
 
-// "81-2991 ภูเก็ต" holds "81-2991"; "ต2610..." is "2610..." (case, spaces, dashes, a Thai prefix ignored)
+// "12-3456 สงขลา" holds "12-3456"; "ต123..." is "123..." (case, spaces, dashes, a Thai prefix ignored)
 const plateKey = (s: string) => s.toUpperCase().replace(/[\s.-]/g, "");
-const invoiceKey = (s: string) => s.toUpperCase().replace(/[^0-9A-Z]/g, "");
+export const invoiceKey = (s: string) => s.toUpperCase().replace(/[^0-9A-Z]/g, "");
+const dmy = (key: string) => key.split("-").reverse().join("/");
 
-// The saved fill against the AI reading of its slip, the vehicle's code and the fill date (Bangkok YYYY-MM-DD).
+// Two requests holding one purchase: "replaces" = a's slip is a replacement tax invoice that cancels b's invoice,
+// "replaced" = b's slip cancels a's; null = neither. Whole invoice keys of at least 6 characters (a shorter one can be
+// another station's).
+export function replacement(a: { invoice: string; replaces: string }, b: { invoice: string; replaces: string }): "replaces" | "replaced" | null {
+  const key = (s: string) => (invoiceKey(s).length >= 6 ? invoiceKey(s) : "");
+  if (key(a.replaces) && key(a.replaces) === key(b.invoice)) return "replaces";
+  if (key(b.replaces) && key(b.replaces) === key(a.invoice)) return "replaced";
+  return null;
+}
+
+// The saved fill against its tax invoice: the dates (invoice date typed, fill date; Bangkok YYYY-MM-DD), and with the
+// AI reading of the slip its numbers, plate, buyer (the company's own tax ID, COMPANY_TAX_ID) and seller (the picked
+// pump's tax ID in Express). An ID not known ("") is not compared.
 export function slipFlags(
   read: SlipRead | null,
-  x: { liters: number; pricePerLiter: number | null; amount: number | null; invoice: string; vehicleCode: string; date: string }
+  x: {
+    liters: number;
+    pricePerLiter: number | null;
+    amount: number | null;
+    invoice: string;
+    invoiceDate: string;
+    vehicleCode: string;
+    date: string;
+    companyTaxId: string;
+    supplierTaxId: string;
+  }
 ): FuelFlag[] {
-  if (!read) return [];
   const flags: FuelFlag[] = [];
   const add = (code: string, text: string) => flags.push({ code, text });
+  // an old slip used again, or a date typed wrong: Express books the invoice date
+  if (x.invoiceDate && x.invoiceDate !== x.date) add("invoice_date", `วันที่ในใบกำกับ ${dmy(x.invoiceDate)} ไม่ใช่วันที่เติม ${dmy(x.date)}`);
+  if (!read) return flags;
   const off = (a: number | null, b: number | null, tolerance: number) => a !== null && b !== null && Math.abs(a - b) > tolerance;
   if (off(read.liters, x.liters, 0.01)) add("slip_liters", `ลิตรไม่ตรงสลิป (สลิป ${num(read.liters, 3)} กรอก ${num(x.liters, 3)})`);
   if (off(read.pricePerLiter, x.pricePerLiter, 0.005)) add("slip_price", `ราคาต่อลิตรไม่ตรงสลิป (สลิป ${num(read.pricePerLiter, 4)} กรอก ${num(x.pricePerLiter, 4)})`);
   if (off(read.amount, x.amount, 0.5)) add("slip_amount", `ยอดเงินไม่ตรงสลิป (สลิป ${baht(read.amount)} กรอก ${baht(x.amount)})`);
   if (read.invoice && invoiceKey(read.invoice) !== invoiceKey(x.invoice)) add("slip_invoice", `เลขที่ใบกำกับไม่ตรงสลิป (สลิป ${read.invoice} กรอก ${x.invoice || "-"})`);
   if (read.plate && !plateKey(read.plate).includes(plateKey(x.vehicleCode))) add("slip_plate", `ทะเบียนบนสลิป ${read.plate} ไม่ตรงกับรถ ${x.vehicleCode}`);
-  if (read.date && read.date !== x.date) add("slip_date", `วันที่บนสลิป ${read.date.split("-").reverse().join("/")} ไม่ใช่วันที่เติม`);
+  if (read.date && read.date !== x.invoiceDate) add("slip_date", `วันที่บนสลิป ${dmy(read.date)} ไม่ตรงกับวันที่ในใบกำกับที่กรอก (${x.invoiceDate ? dmy(x.invoiceDate) : "-"})`);
+  if (read.buyerTaxId && x.companyTaxId && read.buyerTaxId !== x.companyTaxId)
+    add("slip_buyer", `ผู้ซื้อบนสลิป (เลขผู้เสียภาษี ${read.buyerTaxId}) ไม่ใช่บริษัท: ขอคืนภาษีซื้อไม่ได้`);
+  if (read.sellerTaxId && x.supplierTaxId && read.sellerTaxId !== x.supplierTaxId)
+    add("slip_seller", `ผู้ขายบนสลิป (เลขผู้เสียภาษี ${read.sellerTaxId}) ไม่ตรงกับปั๊มที่เลือก (${x.supplierTaxId})`);
   if (read.replaces) add("slip_replaces", `สลิปเป็นใบกำกับฉบับแทน ยกเลิกเลขที่ ${read.replaces} (ห้ามใช้ใบเดิม)`);
   return flags;
+}
+
+// Tax-invoice checks the fuel fill and the repair cost forms share.
+
+// The date printed on a tax invoice (fuel slip, garage bill) is the date Express books it on: a real date, not in
+// the future and at most 183 days old (Bangkok calendar). null = fine, else why not.
+export function invoiceDateError(key: string, now = new Date()): string | null {
+  if (!isDateKey(key)) return "กรอกวันที่ในใบกำกับภาษี";
+  if (key > bkkDateKey(now)) return "วันที่ในใบกำกับภาษีเลยวันนี้ไป ตรวจวันที่อีกครั้ง";
+  if (key < bkkDateKey(new Date(now.getTime() - 183 * 86_400_000))) return "วันที่ในใบกำกับภาษีเก่าเกิน 183 วัน ตรวจวันที่อีกครั้ง";
+  return null;
+}
+
+// Repair bill with VAT on top (mode "2"): Express adds VAT = ROUND(price x 7%, 2), so some totals come from no price
+// at all (a typo or the wrong VAT choice). True for those.
+export function vatOnTopOff(total: number): boolean {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const guess = r2(total / 1.07);
+  return ![guess, r2(guess - 0.01), r2(guess + 0.01)].some((p) => r2(p + r2(p * 0.07)) === total);
 }

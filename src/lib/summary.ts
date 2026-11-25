@@ -4,7 +4,7 @@ import { baht, dec, num } from "./format";
 import { bkkDateKey, bkkStart, dateOnly, thDate } from "./time";
 import { REPAIR_STATUS, type Tone } from "@/components/ui";
 
-// Vehicle figures shared by the vehicle / cost pages, the CSV export and the cron jobs.
+// Vehicle figures (and the plate match) shared by the vehicle / cost pages, the CSV export and the cron jobs.
 
 // A repair cost counts once จัดซื้อ has saved it and the job went ahead.
 export const COSTED = ["repairing", "done", "closed"];
@@ -25,12 +25,24 @@ export const PM_STATE: Record<string, [string, Tone]> = {
 };
 
 // Service (เช็คระยะ) is due at pmLastHours + pmEveryHours; "near" within PM_WARN_HOURS of it.
-// null when the vehicle has no interval or no engine hours yet.
+// null when the vehicle has no interval, no engine hours yet, or no reading of its last service: a blank
+// "เช็คล่าสุดที่" is unknown, never 0 hours (no overdue mark, no LINE reminder from it).
 export function pmState(v: { pmEveryHours: number | null; pmLastHours: { toString(): string } | null }, hours: number | undefined) {
-  if (!v.pmEveryHours || hours === undefined) return null;
-  const due = (dec(v.pmLastHours) ?? 0) + v.pmEveryHours;
+  const last = dec(v.pmLastHours);
+  if (!v.pmEveryHours || last === null || hours === undefined) return null;
+  const due = last + v.pmEveryHours;
   const warn = Number(process.env.PM_WARN_HOURS || 50);
   return { due, state: hours >= due ? "over" : hours >= due - warn ? "near" : "ok" } as const;
+}
+
+// Plates compare ignoring case, spaces, dots and dashes ("ผบ-1234" = "ผบ 1234"), as drivers' typed plates are
+// matched (pickVehicle in actions.ts).
+export const plateKey = (code: string) => code.toUpperCase().replace(/[\s.-]/g, "");
+
+// The code of another vehicle whose plate equals `code` that way (Office adding or renaming one), else null.
+export async function samePlate(code: string, exceptId = ""): Promise<string | null> {
+  const all = await prisma.vehicle.findMany({ where: { id: { not: exceptId } }, select: { code: true } });
+  return all.find((v) => plateKey(v.code) === plateKey(code))?.code ?? null;
 }
 
 export type Cost = { fuel: number; liters: number; repair: number };

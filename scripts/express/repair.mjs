@@ -1,29 +1,53 @@
 // Plans the PO (ใบสั่งซื้อ) and the RR (ซื้อเงินเชื่อ) Express needs for one
-// repair bill saved on the web, the way staff key it in DHEWA66 (576 of 650
-// repair POs since 2025 were received with an RR): one line (the service item,
+// repair bill saved on the web, the way staff key it in the live company (most
+// repair POs are received with an RR): one line (the service item,
 // quantity 1), the RR received against the PO with the tax invoice in REFNUM,
 // "<job> <plate>" in YOUREF, the expense account of the item (STMAS.ACCCOD ->
 // ISACC.ACCNUM01), VAT as on the garage's tax invoice (picked by จัดซื้อ). The
-// garage is paid later by staff: no R3. Reference bills: PO0002945 / RR691031-03,
-// PO0003070 / RR691117-03, PO0003072 / RR691118-01.
+// garage is paid later by staff: no R3.
 //
-// Run on TESTR3 2026-11-18 (PO0002892-94 / RR691118-01..03, one per VAT mode, plus
-// a rollback): every field matches RRs keyed by staff; accounting checked them.
-// EXPRESS_REPAIR_MODE=live on DHEWA66 since 2026-11-18.
+// Run on TESTR3 2026-11-18 (one bill per VAT mode, plus a rollback): every field
+// matches RRs keyed by staff; accounting checked them. EXPRESS_REPAIR_MODE=live
+// since 2026-11-18.
 // Pure planning from parsed Express rows; the write is repair-write.ps1.
 import { balanceColumn } from "./r3.mjs";
 import { h3Prefix } from "./fuel.mjs";
 
 const r2 = (n) => Math.round(n * 100) / 100;
 
+// The repair / maintenance expense accounts (5360-xx, under "5360-00 ค่าซ่อมแซม+บำรุงรักษา"
+// in the chart): the only ones a garage bill books to. The PO book's other service items
+// book to staff loans, petty cash, discounts, wages, job costs or fixed assets.
+const repairAccount = (acc) => /^5360-/.test(acc || "");
+
+// A usable tax ID in APMAS: 13 digits, not one digit 13 times (a filler such as
+// 0000000000000, keyed for shops that have none). Input VAT needs one: it goes on the ISVAT row.
+export const hasTaxId = (id) => /^\d{13}$/.test(id || "") && !/^(\d)\1{12}$/.test(id);
+
+// A supplier's tax ID as the web's masters get it, fuel and repair alike (the web's saveMasters
+// applies the same rule to older agents): vat = a usable ID; the ID itself only for a Thai
+// juristic person (0 then 1-9). Any other usable ID is an individual's (a national ID, or 00...
+// for a non-Thai person) and never leaves the office PC.
+export function supplierTax(id) {
+  const vat = hasTaxId(id);
+  return vat && /^0[1-9]/.test(id) ? { vat, taxId: id } : { vat };
+}
+
 // Repair suppliers and service items from the PO book's history (not the fuel
-// books PP / PK), for the web's choice lists.
-export function buildRepairMasters({ popr, poprit, stmas, apmas, istab }, { prefix = "PO", since = "2025-01-01" } = {}) {
+// books PP / PK), for the web's choice lists, and every Express department (ISTAB 50)
+// for the vehicles' department (fuel and repair). Suppliers most recently used first,
+// with supplierTax.
+export function buildRepairMasters({ popr, poprit, stmas, apmas, istab, isacc }, { prefix = "PO", since = "2025-01-01" } = {}) {
   const heads = new Map(popr.filter((p) => p.PONUM.startsWith(prefix) && p.PODAT && p.PODAT >= since && p.DOCSTAT !== "C").map((p) => [p.PONUM, p]));
   const stock = new Map(stmas.map((s) => [s.STKCOD, s]));
   const deps = new Map(istab.filter((t) => t.TABTYP === "50").map((t) => [t.TYPCOD, t.TYPDES || t.SHORTNAM]));
   const sups = new Map(), items = new Map();
-  for (const p of heads.values()) sups.set(p.SUPCOD, (sups.get(p.SUPCOD) || 0) + 1);
+  for (const p of heads.values()) {
+    const s = sups.get(p.SUPCOD) || { uses: 0, last: "" };
+    s.uses++;
+    if (p.PODAT > s.last) s.last = p.PODAT;
+    sups.set(p.SUPCOD, s);
+  }
   for (const l of poprit) {
     const h = heads.get(l.PONUM);
     if (!h || !l.STKCOD) continue;
@@ -37,22 +61,24 @@ export function buildRepairMasters({ popr, poprit, stmas, apmas, istab }, { pref
     items.set(l.STKCOD, it);
   }
   const suppliers = [...sups.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 300)
+    .sort((a, b) => b[1].last.localeCompare(a[1].last) || b[1].uses - a[1].uses)
+    .slice(0, 1000)
     .map(([code]) => {
       const a = apmas.find((x) => x.SUPCOD === code);
-      return { code, name: a ? `${a.PRENAM} ${a.SUPNAM}`.trim() : code, taxId: a?.TAXID || "", branch: a?.ORGNUM ? String(a.ORGNUM) : "" };
+      return { code, name: a ? `${a.PRENAM} ${a.SUPNAM}`.trim() : code, ...supplierTax(a?.TAXID || "") };
     });
   const itemRows = [...items.values()]
+    // the item's account as planRepair finds it (STMAS.ACCCOD -> ISACC.ACCNUM01) must be a repair account
+    .filter((it) => repairAccount(isacc.find((a) => a.ACCCOD === stock.get(it.code)?.ACCCOD)?.ACCNUM01))
     .map((it) => {
       const s = stock.get(it.code);
       return {
         code: it.code,
-        desc: s?.STKDES || it.lineDesc || it.code,
+        desc: s.STKDES || it.lineDesc || it.code,
         depCode: it.depCode,
         depName: deps.get(it.depCode) || "",
-        unit: s?.PQUCOD || "",
-        stock: !s || s.STKTYP !== "5", // unknown item or a stock part: not booked automatically
+        unit: s.PQUCOD || "",
+        stock: s.STKTYP !== "5", // a stock part: not booked automatically
         vatClaim: true,
         uses: it.uses,
       };
@@ -60,7 +86,10 @@ export function buildRepairMasters({ popr, poprit, stmas, apmas, istab }, { pref
     .filter((it) => !/ห้ามใช้/.test(it.code + it.desc))
     .sort((a, b) => b.uses - a.uses)
     .slice(0, 1000);
-  return { suppliers, items: itemRows };
+  // Every department, not only the items' ones: a vehicle (one filled only from the central
+  // tank, say) may be booked to a department no PO behind these masters used.
+  const departments = [...deps].map(([code, name]) => ({ code, name })).slice(0, 1000);
+  return { suppliers, items: itemRows, departments };
 }
 
 // order: { id, supplier, item, dep, date, invoice, amount, vat, job, plate } (from GET /api/express/repair)
@@ -70,24 +99,14 @@ export function buildRepairMasters({ popr, poprit, stmas, apmas, istab }, { pref
 export function planRepair(order, { stmas, isacc, apmas, aptrn, isprd, isrun }, { prefix = "PO", user = "WEB" } = {}) {
   const sup = apmas.find((s) => s.SUPCOD === order.supplier);
   if (!sup) return { status: "error", reason: `ไม่พบผู้จำหน่าย ${order.supplier} ใน Express` };
-  // The bill's own VAT mode, not the supplier's APMAS.FLGVAT: staff key 83 of 576 repair RRs
-  // differently from it (mostly garages set to VAT on top whose bills include VAT).
-  const flgvat = order.vat;
-  if (!["0", "1", "2"].includes(flgvat)) return { status: "error", reason: "บิลนี้ไม่ได้ระบุ VAT ในใบกำกับภาษี" };
-  const item = stmas.find((s) => s.STKCOD === order.item);
-  if (!item) return { status: "error", reason: `ไม่พบรหัสสินค้า ${order.item} ใน Express` };
-  if (item.STKTYP !== "5") return { status: "error", reason: `${order.item} เป็นสินค้าคงคลัง ต้องคีย์ใน Express เอง` };
-  if (!item.PQUCOD) return { status: "error", reason: `${order.item} ไม่มีหน่วยซื้อใน Express` };
-  // The expense account of a service item: STMAS.ACCCOD -> ISACC.ACCNUM01 (codes are case-sensitive).
-  const expense = isacc.find((a) => a.ACCCOD === item.ACCCOD)?.ACCNUM01;
-  if (!expense) return { status: "error", reason: `ไม่พบบัญชีค่าใช้จ่ายของ ${order.item} ใน Express (ISACC)` };
   if (!(order.amount > 0)) return { status: "error", reason: "ยอดค่าซ่อมเป็นศูนย์" };
   if (!order.invoice) return { status: "error", reason: "ไม่มีเลขที่ใบกำกับภาษี" };
-  if (!order.dep) return { status: "error", reason: "ไม่มีแผนก" };
 
   // Already in Express? An RR of this supplier for this tax invoice, with the same amount and
   // dated within 90 days of the bill (repair-write.ps1 checks the same). Garage invoice numbers
-  // repeat (a new book each year, per branch), so the number alone is not enough.
+  // repeat (a new book each year, per branch), so the number alone is not enough. Checked
+  // before the rules below on how a new bill is written: a bill staff (or an earlier run whose
+  // report was lost) already keyed is reported with its numbers, never as one to key by hand.
   const rr = aptrn.find(
     (r) =>
       r.RECTYP === "3" &&
@@ -99,6 +118,25 @@ export function planRepair(order, { stmas, isacc, apmas, aptrn, isprd, isrun }, 
       Math.abs(Date.parse(r.DOCDAT) - Date.parse(order.date)) <= 90 * 86400000
   );
   if (rr) return { status: "exists", poNo: rr.PONUM || "", rrNo: rr.DOCNUM };
+
+  // The bill's own VAT mode, not the supplier's APMAS.FLGVAT: staff key many repair RRs
+  // differently from it (mostly garages set to VAT on top whose bills include VAT).
+  const flgvat = order.vat;
+  if (!["0", "1", "2"].includes(flgvat)) return { status: "error", reason: "บิลนี้ไม่ได้ระบุ VAT ในใบกำกับภาษี" };
+  // Input VAT needs the seller's tax ID on the ISVAT row: without a usable one (the masters' vat
+  // is false) the bill is not a tax invoice.
+  if (flgvat !== "0" && !hasTaxId(sup.TAXID)) {
+    return { status: "error", reason: `ร้าน / อู่ ${order.supplier} ไม่มีเลขผู้เสียภาษีใน Express จึงลง VAT ไม่ได้: เพิ่มเลขใน Express แล้วส่งใหม่ หรือคีย์บิลนี้เอง` };
+  }
+  const item = stmas.find((s) => s.STKCOD === order.item);
+  if (!item) return { status: "error", reason: `ไม่พบรหัสสินค้า ${order.item} ใน Express` };
+  if (item.STKTYP !== "5") return { status: "error", reason: `${order.item} เป็นสินค้าคงคลัง ต้องคีย์ใน Express เอง` };
+  if (!item.PQUCOD) return { status: "error", reason: `${order.item} ไม่มีหน่วยซื้อใน Express` };
+  // The expense account of a service item: STMAS.ACCCOD -> ISACC.ACCNUM01 (codes are case-sensitive).
+  const expense = isacc.find((a) => a.ACCCOD === item.ACCCOD)?.ACCNUM01;
+  if (!expense) return { status: "error", reason: `ไม่พบบัญชีค่าใช้จ่ายของ ${order.item} ใน Express (ISACC)` };
+  if (!repairAccount(expense)) return { status: "error", reason: `${order.item} ลงบัญชี ${expense} ซึ่งไม่ใช่ค่าซ่อมแซม / บำรุงรักษา (5360-xx): คีย์บิลนี้ใน Express เอง` };
+  if (!order.dep) return { status: "error", reason: "ไม่มีแผนก" };
 
   const run = isrun.find((r) => r.DOCTYP === "RR" && r.PREFIX === "RR");
   if (!run?.ACCNUM02 || !run?.ACCNUM03) return { status: "error", reason: "ไม่พบบัญชีของ RR ใน ISRUN" };

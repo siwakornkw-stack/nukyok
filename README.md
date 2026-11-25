@@ -11,8 +11,14 @@
 | จัดซื้อ | ใบเสนอราคา, รายละเอียดค่าซ่อม + บิล, ซ่อมเสร็จ, เทียบราคา (ราคาที่ซื้อจริงใน Express แยกตามผู้ขาย + ข้อมูลผู้ขาย) |
 | บัญชี | Dashboard ต้นทุน, Express |
 
-Database เป็นข้อมูลหลัก Google Sheets ดูอย่างเดียวผ่าน `=IMPORTDATA("https://nukyok.phuketnukyok.com/api/export/fuel?token=<EXPORT_TOKEN>")`
-(kind: `fuel`, `repairs`, `attendance`, `vehicles`).
+Database เป็นข้อมูลหลัก Google Sheets ดูอย่างเดียวผ่าน `=IMPORTDATA("https://nukyok.phuketnukyok.com/api/export/<kind>?token=<token ของ kind นั้น>")`
+(kind: `fuel`, `repairs`, `attendance`, `vehicles`). แต่ละ kind มี token ของตัวเอง = 32 ตัวอักษรแรกของ
+HMAC-SHA256(`EXPORT_SECRET`, kind) (`exportToken` ใน `src/lib/csv.ts`) สูตรในชีตหนึ่งจึงเปิดได้เฉพาะข้อมูลชุดนั้น
+(คนที่เปิดชีตได้เห็นสูตรด้วย) สูตรพร้อม token ทั้ง 4 ชุดอยู่ที่หน้าแรกของ Office หัวข้อ "สูตร Google Sheets"
+ไฟล์ attendance ไม่มีพิกัด GPS ไม่ตั้ง `EXPORT_SECRET` = ปิดการ export (404) ค่าที่ระบบไม่รับในโปรดักชัน (สั้นกว่า 16 ตัว
+ค่าตัวอย่าง หรือขึ้นต้นด้วย `dev-`) ก็ปิดเช่นกัน และหน้าแรกของ Office แจ้งไว้แทนสูตร `EXPORT_SECRET` ต้องเป็นค่าสุ่มใหม่
+(`openssl rand -hex 32`) ห้ามใช้ค่า `EXPORT_TOKEN` เดิม ซึ่งอยู่ในสูตรของชีตเก่าทุกอัน (แอปไม่อ่าน `EXPORT_TOKEN` แล้ว
+ลบออกจาก `.env` ได้) เปลี่ยน `EXPORT_SECRET` แล้วสูตรเดิมทุกอันใช้ไม่ได้ ต้องคัดลอกสูตรใหม่จากหน้าแรกไปใส่แทน
 
 ## Local dev
 
@@ -56,20 +62,25 @@ provider is a different id and push messages to it fail.
 
 `scripts/express-agent.mjs` runs every minute on the PC that holds the Express data (Task Scheduler, Node 22,
 32-bit VFP OLE DB provider 9.0 SP2 for writing). Install it with `bash deploy/pack-office.sh` ->
-`var/nukyok-office-agent.zip` -> on that PC extract and double-click `install.cmd`: it checks Node and the provider, asks
-for the Express company folder and the modes, writes `C:\nukyok-agent\.env`, does one read-only run and registers the
-Task Scheduler task (`nukyok-express-agent`, every minute, SYSTEM). Values with a backslash go in single quotes in that
-`.env`: Node turns `\n` inside double quotes into a new line (`"D:\Express\nukyok"`). The tick cron tells the Office
-when the PC has been silent for an hour while bills wait (`/office/express` shows it too).
+`~/nukyok-office-agent.zip` (outside the repo: it holds `EXPRESS_SYNC_SECRET`; delete it after the install) -> on that PC
+extract and double-click `install.cmd`: it checks Node and the provider, asks for the Express company folder (the live
+company only, never TESTR3) and the modes, writes `C:\nukyok-agent\.env`, does one read-only run and registers the Task
+Scheduler task (`nukyok-express-agent`, every minute, SYSTEM). The tick cron tells the Office when the PC has been
+silent for an hour while bills wait (`/office/express` shows it too).
 
-- Fuel: Office approves a pump fill -> PK + H3 -> its line in the R3 (ตั้งหนี้บัตรเครดิต) of the bill date. The writers are
-  the ones of nukyoksoftware, unchanged (verified there on the test company TESTR3).
-- Repair: จัดซื้อ saves the cost -> PO + H3 -> R3. **`repair-write.ps1` is new and not yet verified**: keep
-  `EXPRESS_REPAIR_MODE=off` until a run on TESTR3 matches a PO / H3 keyed by staff, and set `EXPRESS_REPAIR_EXPENSE_ACC`.
+- Fuel: Office approves a pump fill -> PK + H3 -> its line in the R3 (ตั้งหนี้บัตรเครดิต) of the bill date.
+- Repair: จัดซื้อ saves the cost -> PO + RR (bought on credit from the garage, no R3).
+- **The writers changed on 2026-11-24** (fuel / R3 came from nukyoksoftware, repair was verified on TESTR3 on
+  2026-11-18): they count as verified again only after the owner's TESTR3 run in `HANDOFF.md`, before the new agent zip
+  is installed.
 - Every write first copies the tables to `var/express-backups/`, logs each change to a ledger and rolls back on failure.
-  Failures show on `/office/express` with a retry button.
+  Failures show on `/office/express` (ลองใหม่, คีย์เองแล้ว, ยกเลิก).
+
+Details (modes, masters, VAT months, duplicates, stuck writes): `CLAUDE.md`, section "Express Accounting".
 
 ## VPS
 
 PM2 app `nukyok-web` on 127.0.0.1:3004 behind nginx (`deploy/`), database `nukyok` (own role), files in
-`/home/ubuntu/nukyok-data/uploads`, cron via `deploy/cron.sh`, nightly dump via `deploy/backup-db.sh`. See `DEPLOY.md`.
+`/home/ubuntu/nukyok-data/uploads` (`UPLOAD_DIR` must be an absolute path in production: the app refuses to save or
+read files with a relative or unset one; new folders are 0700 and files 0600), cron via `deploy/cron.sh`, nightly
+dump via `deploy/backup-db.sh`. See `DEPLOY.md`.

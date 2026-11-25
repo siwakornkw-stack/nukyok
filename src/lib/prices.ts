@@ -55,24 +55,59 @@ export const purchaseItem = (code: string) =>
   !/^\d{4}-\d{2}/.test(code) ||
   (/^(5110|5302|5320|5330|5360|1203|122\d)-/.test(code) && !/^(5110-0[29]|5110-12|5320-04|5320-1[247]|5320-18\.)/.test(code));
 
-// null = not the shape the office PC sends. Lines of other items are dropped, with the suppliers and item
-// names only they used.
+// Lines only people the company pays have: a supplier with one is staff, left out with all its lines unless
+// it is a company. Twin of staffItem in scripts/express/prices.mjs (the accounts are listed there).
+export const staffItem = (code: string) => /^(5301|5310|5110-09|5110-12|1150|1161-05|1111-1|2131-(03|06|10|12)|2132-01|2110-03)/.test(code);
+
+const TITLE = /^(นาย|นาง|น\.ส\.|คุณ|(mr|mrs|ms|miss)[.\s])/i;
+// A private person: a 13-digit ID that is neither a company's nor the zeros keyed for "unknown", or a personal
+// title. Name only, no service wages (5110-05). Twin of person in scripts/express/prices.mjs.
+export const person = (taxId: string, name: string) => (/^\d{13}$/.test(taxId) && !/^(0[1-9]|0+$)/.test(taxId)) || TITLE.test(name);
+// A company: a juristic tax ID (0 and a province / type digit) and no personal title. Twin of company in
+// scripts/express/prices.mjs.
+export const company = (taxId: string, name: string) => /^0[1-9]\d{11}$/.test(taxId) && !TITLE.test(name);
+
+// What is kept of what the office PC sent (the agent applies the same rules at the source): items purchasing
+// buys, service wages (5110-05) only of a supplier known not to be a private person (none of a value whose
+// suppliers are missing), a private person by name only, with the suppliers and item names of those lines.
+// Staff are told by their staff-type lines, which only an agent from before purchaseItem sends: later agents
+// send none, so leaving staff out is the agent's job (an agent without staffItem still sends an employee's
+// reimbursed purchases).
+export function keepPrices(p: z.infer<typeof pricesSchema>) {
+  const sups = new Map(p.suppliers.map((s) => [s.code, s]));
+  const is = (f: typeof person, code: string) => {
+    const s = sups.get(code);
+    return !!s && f(s.taxId, s.name);
+  };
+  const staff = new Set(p.lines.filter((l) => staffItem(l.item) && !is(company, l.sup)).map((l) => l.sup));
+  const lines = p.lines.filter((l) => purchaseItem(l.item) && !staff.has(l.sup) && !(l.item.startsWith("5110-05") && (!sups.has(l.sup) || is(person, l.sup))));
+  const used = new Set(lines.map((l) => l.sup));
+  const codes = new Set(lines.map((l) => l.item));
+  return {
+    since: p.since,
+    lines,
+    items: Object.fromEntries(Object.entries(p.items).filter(([code]) => codes.has(code))),
+    suppliers: p.suppliers
+      .filter((s) => used.has(s.code))
+      .map((s) => (person(s.taxId, s.name) ? { ...s, address: "", zip: "", phone: "", taxId: "", remark: "" } : s)),
+  };
+}
+
+// null = not the shape the office PC sends.
 export async function savePrices(raw: unknown): Promise<number | null> {
   const p = pricesSchema.safeParse(raw);
   if (!p.success) return null;
-  const lines = p.data.lines.filter((l) => purchaseItem(l.item));
-  const sups = new Set(lines.map((l) => l.sup));
-  const codes = new Set(lines.map((l) => l.item));
-  const items = Object.fromEntries(Object.entries(p.data.items).filter(([code]) => codes.has(code)));
-  const value = { since: p.data.since, lines, items, suppliers: p.data.suppliers.filter((s) => sups.has(s.code)), at: new Date().toISOString() };
+  const value = { ...keepPrices(p.data), at: new Date().toISOString() };
   await prisma.appSetting.upsert({ where: { key: PRICES_KEY }, update: { value }, create: { key: PRICES_KEY, value } });
-  return lines.length;
+  return value.lines.length;
 }
 
 // ponytail: one JSON value read whole per search; a table with indexes if it ever grows past a few MB
+// The rules run on reading too: a value saved before them keeps nothing they drop, whenever the next push comes.
 export async function getPrices(): Promise<Prices | null> {
   const row = await prisma.appSetting.findUnique({ where: { key: PRICES_KEY } });
-  return (row?.value as Prices | undefined) ?? null; // checked when saved
+  const v = row?.value as Prices | undefined; // checked when saved
+  return v ? { ...keepPrices(v), at: v.at } : null;
 }
 
 // Price per unit before VAT: what the item really cost the company (it claims the VAT back).
@@ -120,7 +155,8 @@ export type SupplierPrice = {
 export function compareSuppliers(lines: PriceLine[], items: Record<string, string>): SupplierPrice[] {
   const rows = new Map<string, SupplierPrice>();
   const products = new Map<string, number>();
-  const groups = new Map<string, number>(); // product + unit
+  const groups = new Map<string, number>(); // product + unit: lines
+  const sellers = new Map<string, number>(); // product + unit: suppliers
   for (const l of [...lines].sort((a, b) => b.date.localeCompare(a.date))) {
     const product = productOf(l, items);
     const key = productKey(product);
@@ -129,8 +165,10 @@ export function compareSuppliers(lines: PriceLine[], items: Record<string, strin
     groups.set(group, (groups.get(group) ?? 0) + 1);
     const u = unitPrice(l);
     const r = rows.get(`${group}\t${l.sup}`);
-    if (!r) rows.set(`${group}\t${l.sup}`, { product, key, sup: l.sup, unit: l.unit, count: 1, qty: l.qty, min: u, max: u, last: u, lastDate: l.date, lastDoc: l.doc, cheapest: false });
-    else {
+    if (!r) {
+      rows.set(`${group}\t${l.sup}`, { product, key, sup: l.sup, unit: l.unit, count: 1, qty: l.qty, min: u, max: u, last: u, lastDate: l.date, lastDoc: l.doc, cheapest: false });
+      sellers.set(group, (sellers.get(group) ?? 0) + 1);
+    } else {
       r.count++;
       r.qty += l.qty;
       r.min = Math.min(r.min, u);
@@ -147,9 +185,12 @@ export function compareSuppliers(lines: PriceLine[], items: Record<string, strin
       a.last - b.last ||
       b.lastDate.localeCompare(a.lastDate)
   );
-  for (const g of groups.keys()) {
-    const same = out.filter((r) => group(r) === g);
-    if (same.length > 1) same[0].cheapest = true;
+  // one pass (a search can match thousands of lines): the first row of a product and unit has its lowest latest price
+  const seen = new Set<string>();
+  for (const r of out) {
+    const g = group(r);
+    if (!seen.has(g)) r.cheapest = sellers.get(g)! > 1;
+    seen.add(g);
   }
   return out;
 }

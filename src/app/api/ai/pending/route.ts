@@ -1,8 +1,8 @@
 import { prisma } from "@/lib/db";
-import { aiUser } from "@/lib/ai";
+import { UNTRUSTED, aiUser } from "@/lib/ai";
 import { ok } from "@/lib/http";
 import { dec } from "@/lib/format";
-import { ROLES, hasRole } from "@/lib/roles";
+import { hasRole } from "@/lib/roles";
 import { FUEL_STATUS, REPAIR_STATUS, URGENCY } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -44,11 +44,12 @@ export async function GET(req: Request) {
     out.myFuelWaiting = fuel.map((r) => ({ no: r.no, vehicle: r.vehicle.code, askedAt: r.createdAt }));
   }
   if (hasRole(u, "office")) {
-    const rows = await prisma.user.findMany({ where: { status: "pending" }, orderBy: { createdAt: "asc" }, take: 50 });
-    out.usersToApprove = rows.map((x) => ({ name: x.name, requestedRole: ROLES[x.requestedRole as keyof typeof ROLES] ?? x.requestedRole, at: x.createdAt }));
+    // a count only: anyone with LINE can register and type any "name", which must not reach the secretary as text
+    // (it could be written as an order); Office sees the names on /office/users
+    out.usersToApprove = await prisma.user.count({ where: { status: "pending" } });
   }
   if (hasRole(u, "office", "accounting")) {
     out.expressProblems = await prisma.expressOrder.count({ where: { OR: [{ status: "error" }, { r3Status: "error" }] } });
   }
-  return ok(out);
+  return ok({ untrusted: UNTRUSTED, ...out });
 }

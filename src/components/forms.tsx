@@ -189,11 +189,14 @@ export function VehiclePicker({ vehicles, defaultValue }: { vehicles: { id: stri
 }
 
 // The filler form's slip photo: sent at once to `action` (/api/fuel/<id>/slip), which keeps it and has the AI read
-// it. What was read fills litres, price, amount, invoice and pump name and picks "ปั๊ม"; the filler checks them.
-export function SlipInput({ action }: { action: string }) {
+// it. What was read fills litres, price, amount, invoice, its date and pump name and picks "ปั๊ม"; the filler checks
+// them. The form posts the slip it was filled against (slipKey: `current`, then each slip sent; "sending" while one
+// is on its way), so the fill route refuses a save made before the reading came back or after another slip replaced it.
+export function SlipInput({ action, current }: { action: string; current: string }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [url, setUrl] = useState("");
+  const [key, setKey] = useState(current);
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
   async function onChange(e: React.ChangeEvent<HTMLInputElement>) {
     const input = e.currentTarget;
@@ -209,6 +212,7 @@ export function SlipInput({ action }: { action: string }) {
       if (res.status === 413) throw new Error("รูปใหญ่เกินไป");
       if (!res.ok || out.error) throw new Error(out.error || `ผิดพลาด (${res.status})`);
       setUrl(URL.createObjectURL(file));
+      setKey(String(out.key ?? ""));
       const read = out.read as Record<string, string | number | null> | null;
       const form = input.form;
       if (read && form) {
@@ -220,11 +224,12 @@ export function SlipInput({ action }: { action: string }) {
         set("pricePerLiter", read.pricePerLiter);
         set("amount", read.amount);
         set("invoice", read.invoice);
+        set("invoiceDate", read.date);
         set("supplierName", read.station);
         const pump = form.querySelector<HTMLInputElement>('input[name="source"][value="pump"]');
         if (pump) pump.checked = true;
       }
-      setMsg(read ? "อ่านสลิปแล้ว ตรวจตัวเลขให้ตรงกับสลิปก่อนบันทึก" : out.note || "บันทึกรูปสลิปแล้ว กรอกตัวเลขเอง");
+      setMsg(read ? "อ่านสลิปแล้ว ตรวจตัวเลขและวันที่ให้ตรงกับสลิปก่อนบันทึก" : out.note || "บันทึกรูปสลิปแล้ว กรอกตัวเลขเอง");
     } catch (err) {
       setMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -234,6 +239,7 @@ export function SlipInput({ action }: { action: string }) {
   }
   return (
     <div className="rounded-xl border-2 border-dashed border-line bg-bg/60 p-3">
+      <input type="hidden" name="slipKey" value={busy ? "sending" : key} />
       {/* no capture: phones offer the camera and the photo library (a slip is often photographed beforehand);
           with capture, LINE on iOS opens only the camera, or nothing without camera permission */}
       <input

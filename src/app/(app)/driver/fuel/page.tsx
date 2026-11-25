@@ -13,7 +13,7 @@ export default async function DriverFuelPage() {
       where: { driverId: u.id },
       orderBy: { createdAt: "desc" },
       take: 5,
-      select: { id: true, no: true, status: true, engineHours: true, driverHours: true, createdAt: true, vehicle: { select: { code: true } } },
+      select: { id: true, no: true, status: true, engineHours: true, driverHours: true, slipPhoto: true, createdAt: true, vehicle: { select: { code: true } } },
     }),
   ]);
   // "จำข้อมูลไว้": preselect the remembered vehicle while it is still active
@@ -62,7 +62,8 @@ export default async function DriverFuelPage() {
                   </div>
                 </div>
                 <StatusPill map={FUEL_STATUS} value={r.status} />
-                {r.status === "waiting" && (
+                {/* a slip sent = a filler is filling it: only Office cancels it then */}
+                {r.status === "waiting" && !r.slipPhoto && (
                   <ActionButton action={`/api/fuel/${r.id}/cancel`} label="ยกเลิก" confirm={`ยกเลิกคำขอเติมน้ำมัน #${r.no}?`} />
                 )}
               </li>

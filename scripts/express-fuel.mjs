@@ -4,16 +4,19 @@
 //   node scripts/express-fuel.mjs --dir <Express company folder> --order <order.json> --write   (write it)
 //
 // order.json: { id, withH3, supplier, item, dep, date, invoice, liters, price, amount }
-// (what GET /api/cron/express-fuel hands out). Plans with scripts/express/fuel.mjs,
+// (what GET /api/express/fuel hands out), plus force: true once Office has confirmed that
+// another H3 / PK of the invoice is another bill. Plans with scripts/express/fuel.mjs,
 // writes through the VFP OLE DB provider (32-bit PowerShell + express/fuel-write.ps1).
-// Safe to repeat: an H3 with this tax invoice, or a PK with it in "อ้างอิง", is
-// reported, not written again. Each write leaves var/fuel-ledger/<order id>.json.
+// Safe to repeat: an H3 with this tax invoice and amount, or a PK with it in "อ้างอิง"
+// for this amount and vehicle, is reported, not written again (the invoice from the same
+// supplier with another amount or vehicle is an error a person checks). Each write
+// leaves var/fuel-ledger/<order id>.json.
 import { spawnSync } from "child_process";
-import { writeFileSync, mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync } from "fs";
+import { writeFileSync, mkdtempSync, rmSync, mkdirSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
 import { fileURLToPath } from "url";
-import { readDbf } from "./express/dbf.mjs";
+import { readDbf, stuckLedger, stuckText, ledgerTime, noResult } from "./express/dbf.mjs";
 import { planFuel } from "./express/fuel.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -28,27 +31,23 @@ export function readFuelTables(dir) {
 export function writeFuel(dir, plan) {
   mkdirSync(FUEL_LEDGER_DIR, { recursive: true });
   const ledger = path.join(FUEL_LEDGER_DIR, `${plan.orderId}.json`);
-  // A run that died half way, or could not undo itself, needs a person first.
-  if (existsSync(ledger)) {
-    let prev = {};
-    try {
-      prev = JSON.parse(readFileSync(ledger, "utf8").replace(/^\uFEFF/, ""));
-    } catch {}
-    if (prev.status === "writing" || prev.status === "ROLLBACK-FAILED") {
-      return { ok: false, stuck: true, error: `บิลนี้เขียนลง Express ค้างไว้ไม่สมบูรณ์ (${prev.status} ${prev.pkNo || ""} ${prev.h3No || ""}) ต้องตรวจใน Express ก่อน: ${ledger}` };
-    }
-  }
+  // A run that died half way, could not undo itself, or left a ledger that cannot be read needs a person first.
+  const prev = stuckLedger(ledger);
+  if (prev) return { ok: false, stuck: true, error: stuckText(prev, ledger) };
   const tmp = mkdtempSync(path.join(tmpdir(), "fuel-"));
   try {
     const planFile = path.join(tmp, "plan.json");
     writeFileSync(planFile, JSON.stringify(plan), "utf8");
+    const before = ledgerTime(ledger);
     const r = spawnSync(
       PS32,
       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(here, "express", "fuel-write.ps1"), "-Dir", dir, "-PlanFile", planFile, "-Ledger", ledger],
       { encoding: "utf8", timeout: 180000 }
     );
     const line = (r.stdout || "").split(/\r?\n/).find((l) => l.startsWith("RESULT:"));
-    if (!line) return { ok: false, error: `writer gave no result: ${(r.stderr || r.stdout || r.error?.message || "").trim().slice(0, 300)}` };
+    // Killed by the timeout above (no rollback) or never started: its ledger says how far it got.
+    // An H3 written onto an existing PK leaves that PK's number only in the plan.
+    if (!line) return noResult(ledger, before, r, (l) => ({ pkNo: l.pkNo || plan.pkNo, h3No: l.h3No }));
     const res = line.slice(7);
     const docs = (s) => {
       const [pkNo = "", h3No = ""] = s.split("|");

@@ -2,7 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { Card, Files, Info, Pill, StatusPill, REPAIR_STATUS, URGENCY } from "@/components/ui";
 import { EXPRESS_STATUS, expressDocs } from "@/lib/express";
 import { baht, driverOf, num } from "@/lib/format";
-import { thDateTime } from "@/lib/time";
+import { thDate, thDateTime } from "@/lib/time";
 
 // One repair request as the purchasing and exec detail pages show it.
 export const repairInclude = {
@@ -74,6 +74,7 @@ export function RepairDetail({ r }: { r: Repair }) {
               ["ร้าน / อู่", [r.supplierCode, r.supplierName].filter(Boolean).join(" ") || "-"],
               ["รหัสค่าซ่อม", r.itemCode || "-"],
               ["เลขที่ใบกำกับภาษี", r.invoice || "-"],
+              ["วันที่ในใบกำกับภาษี", thDate(r.invoiceDate)],
               ["รายละเอียด", multiline(r.costDetail)],
               ["บิล / รูป", <Files key="bills" keys={r.billFiles} />],
               ["โดย", by(r.costedBy, r.costedAt)],
@@ -117,7 +118,7 @@ export function RepairDetail({ r }: { r: Repair }) {
               ]}
             />
           ) : (
-            <p className="text-sm text-muted">ไม่ได้เข้าคิวเปิด PO อัตโนมัติ: คีย์ใน Express เอง</p>
+            <p className="text-sm text-muted">ยังไม่ได้ส่งเข้า Express (จัดซื้อ / Office ส่งได้จากหน้างานซ่อม หรือคีย์ใน Express เอง)</p>
           )}
         </Card>
       )}

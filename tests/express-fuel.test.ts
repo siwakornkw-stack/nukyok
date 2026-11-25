@@ -1,5 +1,5 @@
-// Copied from the reference repo (nukyoksoftware tests/express-fuel.test.ts): the
-// office-PC planners are used here unchanged, so their proven tests come along.
+// Copied from the reference repo (nukyoksoftware tests/express-fuel.test.ts) with the
+// office-PC planners, then extended with the audit fixes of 2026-11 (twin check, line maths, masters).
 import { describe, expect, it } from "vitest";
 import { h3Prefix, lineAmounts, planFuel } from "../scripts/express/fuel.mjs";
 import { buildFuelMasters } from "../scripts/express/fuel-masters.mjs";
@@ -7,8 +7,8 @@ import { buildFuelMasters } from "../scripts/express/fuel-masters.mjs";
 const isprd = [{ BEG1NY: "2021-01-01", END1NY: "2027-01-31", LOCK1NY: "N", BEG2NY: "2027-02-01", END2NY: "2027-02-28", LOCK2NY: "Y" }];
 
 const tables = (extra: Record<string, unknown[]> = {}) => ({
-  popr: [{ PONUM: "PK0000001", SUPCOD: "บ015", PODAT: "2026-10-27", YOUREF: "26102700000001", DOCSTAT: "N" }],
-  poprit: [],
+  popr: [{ PONUM: "PK0000001", SUPCOD: "บ015", PODAT: "2026-10-27", YOUREF: "26102700000001", DOCSTAT: "N", NETAMT: 1004.67 }],
+  poprit: [{ PONUM: "PK0000001", SEQNUM: "1", STKCOD: "70-1826" }],
   stmas: [
     { STKCOD: "70-1826", STKDES: "ค่าน้ำมันรถ 70-1826", STKTYP: "5", PQUCOD: "ลต" },
     { STKCOD: "140 SY", STKDES: "น้ำมัน SY140", STKTYP: "0", PQUCOD: "ลต" },
@@ -53,6 +53,11 @@ describe("fuel PK + H3 plan", () => {
     expect(lineAmounts(30, 32.94, 989)).toMatchObject({ price: 32.97, disc: 0.1 });
     // no pump price on the bill
     expect(lineAmounts(20, 0, 700).price).toBe(35);
+    // half a satang rounds up, like the line staff key in Express (counted in floating point
+    // these gave a discount of 0.29, a negative one, and a price raised to 29.91)
+    expect(lineAmounts(44.55, 44.9, 2000).disc).toBe(0.3); // 2000.295 -> 2000.30
+    expect(lineAmounts(10.25, 32.18, 329.85)).toMatchObject({ price: 32.18, disc: 0 }); // 329.845 -> 329.85
+    expect(lineAmounts(10.25, 29.9, 306.48)).toMatchObject({ price: 29.9, disc: 0 }); // 306.475 -> 306.48
   });
 
   it("plans a new PK + H3", () => {
@@ -62,6 +67,7 @@ describe("fuel PK + H3 plan", () => {
       orderId: "o1",
       pkNo: "",
       withH3: true,
+      force: false,
       h3Prefix: "H3691028-",
       supplier: { code: "บ015", name: "บางจากกรีนเนท", prenam: "บริษัท", taxId: "0105556000001", branch: 12 },
       item: { code: "70-1826", unit: "ลต" },
@@ -75,14 +81,66 @@ describe("fuel PK + H3 plan", () => {
     });
   });
 
-  it("writes nothing when the tax invoice already has an H3 from that supplier", () => {
-    expect(planFuel(order({ invoice: "26101300000009" }), tables())).toEqual({ status: "exists", pkNo: "PP0002773", h3No: "H3691013-01" });
+  it("writes nothing when the tax invoice already has an H3 of that amount", () => {
+    expect(planFuel(order({ invoice: "26101300000009", amount: 1500.5, price: 0 }), tables())).toEqual({ status: "exists", pkNo: "PP0002773", h3No: "H3691013-01" });
     // a cancelled H3 does not count
     expect(planFuel(order({ invoice: "26101400000001" }), tables()).status).toBe("ready");
     // another supplier code (another branch): the same invoice counts only with the same amount
     const other = tables({ apmas: [...tables().apmas, { SUPCOD: "ป001", SUPNAM: "ปตท", PRENAM: "", TAXID: "", ORGNUM: "" }] });
     expect(planFuel(order({ supplier: "ป001", invoice: "26101300000009", amount: 1000, price: 0 }), other).status).toBe("ready");
     expect(planFuel(order({ supplier: "ป001", invoice: "26101300000009", amount: 1500.5, price: 0 }), other).status).toBe("exists");
+  });
+
+  // One tax invoice split over several vehicles (DHEWA66 has such H3 pairs): another
+  // vehicle's H3 is not this bill, and neither is this bill keyed with another amount.
+  it("leaves the invoice of an H3 from that supplier with another amount to a person", () => {
+    expect(planFuel(order({ invoice: "26101300000009" }), tables())).toEqual({
+      status: "error",
+      reason:
+        "อาจซ้ำ: ใบกำกับ 26101300000009 ของผู้จำหน่ายนี้มี H3691013-01 (ยอด 1500.50) ใน Express แล้ว ไม่ตรงกับบิลนี้ (รถ 70-1826 ยอด 1004.67) " +
+        'อาจเป็นใบกำกับที่แบ่งเติมหลายคัน ตรวจใน Express ถ้ายังไม่มีบิลนี้ให้กด "ยืนยันว่าไม่ซ้ำ" หรือคีย์เอง',
+    });
+    // the PK-only bill and the H3 stage too: never marked written with the other vehicle's numbers
+    expect(planFuel(order({ invoice: "26101300000009", withH3: false }), tables()).reason).toMatch(/^อาจซ้ำ/);
+    expect(planFuel(order({ stage: "h3", pkNo: "PK0000001", invoice: "26101300000009" }), tables()).reason).toMatch(/^อาจซ้ำ/);
+  });
+
+  // The first part of the invoice went in PK only (no live H3 for that car, a stock item, a closed VAT month).
+  it("never takes the PK of another vehicle on the same invoice for this bill", () => {
+    const t = tables({
+      popr: [{ PONUM: "PK0000001", SUPCOD: "บ015", PODAT: "2026-10-28", YOUREF: "26102811012580", DOCSTAT: "N", NETAMT: 500 }],
+      poprit: [{ PONUM: "PK0000001", SEQNUM: "1", STKCOD: "81-0664" }],
+    });
+    expect(planFuel(order(), t)).toEqual({
+      status: "error",
+      reason:
+        "อาจซ้ำ: ใบกำกับ 26102811012580 ของผู้จำหน่ายนี้มี PK0000001 (รถ 81-0664 ยอด 500.00) ใน Express แล้ว ไม่ตรงกับบิลนี้ (รถ 70-1826 ยอด 1004.67) " +
+        'อาจเป็นใบกำกับที่แบ่งเติมหลายคัน ตรวจใน Express ถ้ายังไม่มีบิลนี้ให้กด "ยืนยันว่าไม่ซ้ำ" หรือคีย์เอง',
+    });
+    // a PK-only bill is not "already there" with that PK either
+    expect(planFuel(order({ withH3: false }), t).reason).toMatch(/^อาจซ้ำ: ใบกำกับ 26102811012580 ของผู้จำหน่ายนี้มี PK0000001 /);
+    // the same vehicle with another amount: still a person's call
+    const same = tables({ popr: [{ ...t.popr[0], NETAMT: 1500 }], poprit: [{ PONUM: "PK0000001", STKCOD: "70-1826" }] });
+    expect(planFuel(order(), same).reason).toMatch(/^อาจซ้ำ/);
+    // a PK with no line (an orphan header) is never taken for this bill
+    expect(planFuel(order({ amount: 500, price: 0 }), tables({ popr: t.popr, poprit: [] })).reason).toMatch(/^อาจซ้ำ/);
+    // Office checked Express (force): a PK + H3 of its own; the plan tells fuel-write.ps1 to skip the same check
+    expect(planFuel(order({ force: true }), t)).toMatchObject({ status: "ready", pkNo: "", withH3: true, force: true });
+    expect(planFuel(order({ force: true, withH3: false }), t)).toMatchObject({ status: "ready", pkNo: "", withH3: false, force: true });
+    // this bill's own PK next to the other vehicle's: only its H3 is added, or it is already there
+    const both = tables({
+      popr: [...t.popr, { PONUM: "PK0000002", SUPCOD: "บ015", PODAT: "2026-10-28", YOUREF: "26102811012580", DOCSTAT: "N", NETAMT: 1004.67 }],
+      poprit: [...t.poprit, { PONUM: "PK0000002", SEQNUM: "1", STKCOD: "70-1826" }],
+    });
+    expect(planFuel(order(), both)).toMatchObject({ status: "ready", pkNo: "PK0000002", withH3: true, force: false });
+    expect(planFuel(order({ withH3: false }), both)).toEqual({ status: "exists", pkNo: "PK0000002", h3No: "" });
+  });
+
+  it("lets Office confirm an H3 of the invoice is another bill, but never writes one of the same amount again", () => {
+    expect(planFuel(order({ invoice: "26101300000009", force: true }), tables())).toMatchObject({ status: "ready", pkNo: "", withH3: true, force: true });
+    expect(planFuel(order({ invoice: "26101300000009", amount: 1500.5, price: 0, force: true }), tables())).toEqual({ status: "exists", pkNo: "PP0002773", h3No: "H3691013-01" });
+    // only true counts as confirmed
+    expect(planFuel(order({ invoice: "26101300000009", force: "true" }), tables()).reason).toMatch(/^อาจซ้ำ/);
   });
 
   it("refuses litres x price far from the paid total (a typo)", () => {
@@ -110,7 +168,8 @@ describe("fuel PK + H3 plan", () => {
   it("writes only the PK for a stock item and reports a PK already there", () => {
     const p = planFuel(order({ item: "140 SY" }), tables());
     expect(p).toMatchObject({ status: "ready", withH3: false, accounts: null, hpColumn: "" });
-    expect(planFuel(order({ item: "140 SY", date: "2026-10-27", invoice: "26102700000001" }), tables())).toEqual({ status: "exists", pkNo: "PK0000001", h3No: "" });
+    const stock = tables({ poprit: [{ PONUM: "PK0000001", SEQNUM: "1", STKCOD: "140 SY" }] });
+    expect(planFuel(order({ item: "140 SY", date: "2026-10-27", invoice: "26102700000001" }), stock)).toEqual({ status: "exists", pkNo: "PK0000001", h3No: "" });
     expect(planFuel(order({ withH3: false, date: "2026-10-27", invoice: "26102700000001" }), tables()).status).toBe("exists");
   });
 
@@ -134,6 +193,9 @@ describe("fuel master data from Express", () => {
       { PONUM: "PP0000003", SUPCOD: "ซ001", PODAT: "2026-09-01", DOCSTAT: "C", DEPCOD: "" }, // cancelled
       { PONUM: "PP0000000", SUPCOD: "ซ002", PODAT: "2024-12-31", DOCSTAT: "M", DEPCOD: "" }, // too old
       { PONUM: "PO0000001", SUPCOD: "ซ003", PODAT: "2026-09-01", DOCSTAT: "N", DEPCOD: "" }, // not a fuel book
+      { PONUM: "PP0000004", SUPCOD: "ส001", PODAT: "2026-09-15", DOCSTAT: "M", DEPCOD: "" }, // a person, not a company
+      { PONUM: "PP0000005", SUPCOD: "ฟ001", PODAT: "2026-09-20", DOCSTAT: "M", DEPCOD: "" }, // keyed with a filler tax ID
+      { PONUM: "PP0000006", SUPCOD: "ต001", PODAT: "2026-09-25", DOCSTAT: "M", DEPCOD: "" }, // a non-Thai person
     ],
     poprit: [
       { PONUM: "PP0000001", STKCOD: "70-1826", STKDES: "ค่าน้ำมัน", DEPCOD: "01" },
@@ -142,34 +204,54 @@ describe("fuel master data from Express", () => {
       { PONUM: "PK0000001", STKCOD: "140 SY", STKDES: "น้ำมัน SY140", DEPCOD: "05" },
       { PONUM: "PP0000003", STKCOD: "X-1", STKDES: "", DEPCOD: "01" },
       { PONUM: "PO0000001", STKCOD: "X-2", STKDES: "", DEPCOD: "01" },
+      { PONUM: "PP0000002", STKCOD: "81-0664", STKDES: "ค่าน้ำมัน", DEPCOD: "03" },
     ],
     stmas: [
       { STKCOD: "70-1826", STKDES: "ค่าน้ำมันรถ 70-1826", STKTYP: "5", PQUCOD: "ลต" },
       { STKCOD: "140 SY", STKDES: "น้ำมัน SY140", STKTYP: "0", PQUCOD: "ลต" },
+      { STKCOD: "81-0664", STKDES: "ค่าน้ำมันรถ 81-0664", STKTYP: "5", PQUCOD: "ลต" },
     ],
-    apmas: [{ SUPCOD: "บ015", PRENAM: "บริษัท", SUPNAM: "บางจากกรีนเนท", TAXID: "0105556000001", ORGNUM: "00012" }],
+    apmas: [
+      { SUPCOD: "บ015", PRENAM: "บริษัท", SUPNAM: "บางจากกรีนเนท", TAXID: "0105556000001", ORGNUM: "00012" },
+      { SUPCOD: "ส001", PRENAM: "นาย", SUPNAM: "ทดสอบ ใจดี", TAXID: "1234567890123", ORGNUM: 0 },
+      { SUPCOD: "ฟ001", PRENAM: "", SUPNAM: "ปั๊มทดสอบ", TAXID: "0000000000000", ORGNUM: 0 },
+      { SUPCOD: "ต001", PRENAM: "MR.", SUPNAM: "TEST PERSON", TAXID: "0012345678901", ORGNUM: 0 },
+    ],
     istab: [{ TABTYP: "50", TYPCOD: "03", TYPDES: "ขนส่ง" }],
     aptrn: [
       { DOCNUM: "H3690701-01", DOCDAT: "2026-07-01", FLGVAT: "1", DOCSTAT: "N" },
       { DOCNUM: "H3690801-01", DOCDAT: "2026-08-01", FLGVAT: "0", DOCSTAT: "N" },
+      { DOCNUM: "H3690802-01", DOCDAT: "2026-08-02", FLGVAT: "1", DOCSTAT: "N" },
+      { DOCNUM: "H3690901-01", DOCDAT: "2026-09-01", FLGVAT: "1", DOCSTAT: "C" }, // cancelled
     ],
     stcrd: [
       { DOCNUM: "H3690701-01", STKCOD: "70-1826" },
       { DOCNUM: "H3690801-01", STKCOD: "70-1826" },
+      { DOCNUM: "H3690802-01", STKCOD: "81-0664" },
+      { DOCNUM: "H3690901-01", STKCOD: "140 SY" },
     ],
   });
 
+  // vat: a usable tax ID in Express (13 digits, not a filler such as 0000000000000). The ID
+  // itself goes to the web only for a Thai company (0 then 1-9), never an individual's (a
+  // national ID, or 00... for a non-Thai person). The same rule as the repair masters.
   it("lists the fuel suppliers, most used first", () => {
     expect(m.suppliers).toEqual([
-      { code: "บ015", name: "บริษัท บางจากกรีนเนท", taxId: "0105556000001", branch: "00012", uses: 2, last: "2026-08-01" },
-      { code: "ป001", name: "ป001", taxId: "", branch: "", uses: 1, last: "2026-10-27" },
+      { code: "บ015", name: "บริษัท บางจากกรีนเนท", vat: true, taxId: "0105556000001", branch: "00012", uses: 2, last: "2026-08-01" },
+      { code: "ป001", name: "ป001", vat: false, branch: "", uses: 1, last: "2026-10-27" },
+      { code: "ส001", name: "นาย ทดสอบ ใจดี", vat: true, branch: "", uses: 1, last: "2026-09-15" },
+      { code: "ฟ001", name: "ปั๊มทดสอบ", vat: false, branch: "", uses: 1, last: "2026-09-20" },
+      { code: "ต001", name: "MR. TEST PERSON", vat: true, branch: "", uses: 1, last: "2026-09-25" },
     ]);
+    for (const s of m.suppliers.slice(1)) expect(s).not.toHaveProperty("taxId");
   });
 
+  // An item with no live H3 yet is unknown: not claimed (PK only, staff key its first H3).
   it("gives each vehicle item its latest department, stock type and VAT claim", () => {
     expect(m.items).toEqual([
       { code: "70-1826", desc: "ค่าน้ำมันรถ 70-1826", depCode: "03", depName: "ขนส่ง", unit: "ลต", stock: false, vatClaim: false, uses: 2, last: "2026-08-01" },
-      { code: "140 SY", desc: "น้ำมัน SY140", depCode: "05", depName: "", unit: "ลต", stock: true, vatClaim: true, uses: 1, last: "2026-10-27" },
+      { code: "140 SY", desc: "น้ำมัน SY140", depCode: "05", depName: "", unit: "ลต", stock: true, vatClaim: false, uses: 1, last: "2026-10-27" },
+      { code: "81-0664", desc: "ค่าน้ำมันรถ 81-0664", depCode: "03", depName: "ขนส่ง", unit: "ลต", stock: false, vatClaim: true, uses: 1, last: "2026-08-01" },
     ]);
   });
 });

@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { getMasters } from "@/lib/express";
+import { getMasters, knownDepartments } from "@/lib/express";
 import { baht, dec, num } from "@/lib/format";
 import { hasRole } from "@/lib/roles";
 import { requirePage } from "@/lib/session";
@@ -21,7 +21,7 @@ export default async function VehiclePage({ params }: { params: Promise<{ id: st
   const year = Number(today.slice(0, 4));
   const monthStart = bkkStart(`${today.slice(0, 7)}-01`);
   const nextMonth = bkkStart(`${new Date(Date.UTC(year, Number(today.slice(5, 7)), 1)).toISOString().slice(0, 7)}-01`);
-  const live = { vehicleId: id, status: { not: "cancelled" } };
+  const approved = { vehicleId: id, status: "approved" };
   const [fuel, repairs, hoursAll, monthCosts, yearCosts, before, inMonth, masters] = await Promise.all([
     // one extra row so the oldest shown fill still has a previous one for ลิตร/ชม.
     prisma.fuelRequest.findMany({
@@ -38,17 +38,20 @@ export default async function VehiclePage({ params }: { params: Promise<{ id: st
     latestHours(),
     vehicleCosts(monthStart, nextMonth),
     vehicleCosts(bkkStart(`${year}-01-01`), bkkStart(`${year + 1}-01-01`)),
-    prisma.fuelRequest.aggregate({ where: { ...live, createdAt: { lt: monthStart } }, _max: { engineHours: true } }),
-    prisma.fuelRequest.aggregate({ where: { ...live, createdAt: { gte: monthStart } }, _max: { engineHours: true }, _min: { engineHours: true } }),
-    office ? getMasters() : null,
+    // ใช้ไปเดือนนี้ as on the cost page: readings Office approved, by fill time (not the highest ever: one typo
+    // would zero or inflate it), from the last one before the month (else the month's first) to the month's last
+    prisma.fuelRequest.findFirst({ where: { ...approved, filledAt: { lt: monthStart } }, orderBy: { filledAt: "desc" }, select: { engineHours: true } }),
+    prisma.fuelRequest.findMany({ where: { ...approved, filledAt: { gte: monthStart, lt: nextMonth } }, orderBy: { filledAt: "asc" }, select: { engineHours: true } }),
+    // every role: the card shows the item and the department bills are booked to
+    getMasters(),
   ]);
 
   const hours = hoursAll.get(id);
   const pm = pmState(v, hours);
   const shown = fuel.slice(0, 100);
-  const maxIn = dec(inMonth._max.engineHours);
-  const base = dec(before._max.engineHours) ?? dec(inMonth._min.engineHours);
-  const usedThisMonth = maxIn !== null && base !== null ? Math.max(0, maxIn - base) : null;
+  const last = dec(inMonth[inMonth.length - 1]?.engineHours);
+  const base = dec(before?.engineHours) ?? dec(inMonth[0]?.engineHours);
+  const usedThisMonth = last !== null && base !== null ? Math.max(0, last - base) : null;
   const zero = { fuel: 0, liters: 0, repair: 0 };
   const totals: [string, typeof zero][] = [
     ["เดือนนี้", monthCosts.get(id) ?? zero],
@@ -56,6 +59,23 @@ export default async function VehiclePage({ params }: { params: Promise<{ id: st
   ];
   const items = masters?.fuel.items ?? [];
   const item = items.find((i) => i.code === v.expressItem);
+  const deps = masters ? knownDepartments(masters) : null;
+  // what bills are booked to: the department typed for this vehicle, else its fuel item's own
+  const dep = v.expressDep || item?.depCode || "";
+  const depNote = !dep || !deps ? "" : !deps.has(dep) ? " (ไม่พบใน Express)" : deps.get(dep) ? ` ${deps.get(dep)}` : "";
+  // what the form loaded, posted back with it: the route writes only the fields the user changed
+  const loaded = {
+    code: v.code,
+    model: v.model,
+    litersPerHour: dec(v.litersPerHour),
+    tankLiters: dec(v.tankLiters),
+    pmEveryHours: v.pmEveryHours,
+    pmLastHours: dec(v.pmLastHours),
+    expressItem: v.expressItem,
+    expressDep: v.expressDep,
+    note: v.note,
+    active: v.active ? "1" : "",
+  };
 
   return (
     <>
@@ -76,11 +96,14 @@ export default async function VehiclePage({ params }: { params: Promise<{ id: st
                 <>
                   {num(pm.due)} ชม. <StatusPill map={PM_STATE} value={pm.state} />
                 </>
+              ) : v.pmEveryHours && v.pmLastHours === null ? (
+                "ไม่ทราบ (ยังไม่ได้กรอกเช็คล่าสุดที่)"
               ) : (
                 "-"
               ),
             ],
-            ["Express", v.expressItem ? `${v.expressItem}${v.expressDep ? ` แผนก ${v.expressDep}` : ""}` : "-"],
+            ["Express รหัสน้ำมัน", v.expressItem ? `${v.expressItem}${item ? ` ${item.desc}` : masters ? " (ไม่พบใน Express)" : ""}` : "-"],
+            ["แผนก Express", dep ? `${dep}${depNote}${v.expressDep ? "" : " (ตามรหัสน้ำมัน)"}` : v.expressItem ? "(ตามรหัสน้ำมัน)" : "-"],
             ["สถานะ", v.active ? "ใช้งาน" : "ไม่ใช้งาน"],
             ["หมายเหตุ", v.note || "-"],
           ]}
@@ -89,7 +112,7 @@ export default async function VehiclePage({ params }: { params: Promise<{ id: st
           <div className="mt-4">
             <ActionButton
               action={`/api/vehicles/${v.id}`}
-              body={{ action: "pm-done" }}
+              body={{ action: "pm-done", hours }}
               label="บันทึกเช็คระยะแล้ว"
               confirm={`บันทึกว่าเช็คระยะแล้วที่ ชม.เครื่อง ${num(hours)}?`}
             />
@@ -170,6 +193,7 @@ export default async function VehiclePage({ params }: { params: Promise<{ id: st
       {office && (
         <Card title="แก้ไขข้อมูลรถ">
           <ApiForm action={`/api/vehicles/${v.id}`}>
+            <input type="hidden" name="was" value={JSON.stringify(loaded)} />
             <Field label="รหัส / ทะเบียนรถ">
               <input name="code" required maxLength={30} defaultValue={v.code} className={inputCls} />
             </Field>
@@ -185,7 +209,7 @@ export default async function VehiclePage({ params }: { params: Promise<{ id: st
             <Field label="รอบเช็คระยะ (ชม.)">
               <input name="pmEveryHours" type="number" inputMode="numeric" min="0" step="1" defaultValue={v.pmEveryHours ?? ""} className={inputCls} />
             </Field>
-            <Field label="เช็คล่าสุดที่ (ชม.เครื่อง)">
+            <Field label="เช็คล่าสุดที่ (ชม.เครื่อง)" hint="ว่างไว้ = ไม่ทราบ ระบบยังไม่เตือนเช็คระยะของคันนี้">
               <input name="pmLastHours" type="number" inputMode="decimal" min="0" step="0.1" defaultValue={dec(v.pmLastHours) ?? ""} className={inputCls} />
             </Field>
             <Field label="รหัสน้ำมันใน Express" hint={masters ? undefined : "ยังไม่มีข้อมูลจาก Express (เครื่อง Office ยังไม่ส่งมา)"}>
@@ -201,9 +225,18 @@ export default async function VehiclePage({ params }: { params: Promise<{ id: st
             </Field>
             <Field
               label="แผนก Express"
-              hint={item ? `แผนกของ ${item.code} ใน Express: ${item.depCode || "-"} (ว่างไว้ = ใช้ค่านี้)` : "ว่างไว้ = ใช้แผนกของรหัสน้ำมันที่เลือก"}
+              hint={`${item ? `ว่างไว้ = ใช้แผนกของ ${item.code} ใน Express: ${item.depCode || "-"}` : "ว่างไว้ = ใช้แผนกของรหัสน้ำมันที่เลือก"} (ทั้งน้ำมันและค่าซ่อม ตัวพิมพ์เล็ก-ใหญ่ต้องตรงกับ Express)`}
             >
-              <input name="expressDep" maxLength={4} defaultValue={v.expressDep} placeholder={item?.depCode} className={inputCls} />
+              <input name="expressDep" maxLength={4} defaultValue={v.expressDep} placeholder={item?.depCode} list="express-deps" autoComplete="off" className={inputCls} />
+              {deps && (
+                <datalist id="express-deps">
+                  {[...deps].map(([code, name]) => (
+                    <option key={code} value={code}>
+                      {name}
+                    </option>
+                  ))}
+                </datalist>
+              )}
             </Field>
             <Field label="หมายเหตุ">
               <textarea name="note" rows={2} maxLength={1000} defaultValue={v.note} className={inputCls} />

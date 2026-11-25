@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { bad, formNum, formStr, ok, readForm } from "@/lib/http";
 import { apiUser } from "@/lib/session";
+import { samePlate } from "@/lib/summary";
 
 // "" -> null; NaN, negative, above max or (int) not whole -> undefined = invalid.
 function n(fd: FormData, k: string, max: number, int = false) {
@@ -25,6 +26,9 @@ export async function POST(req: Request) {
     pmLastHours: n(fd, "pmLastHours", 1_000_000),
   };
   if (Object.values(nums).includes(undefined)) return bad("ตัวเลขไม่ถูกต้อง (ต้องไม่ติดลบ และรอบเช็คระยะต้องเป็นจำนวนเต็ม)");
+  // one truck, one record: a driver may already have added it as "ผบ 1234" when Office types "ผบ-1234"
+  const dup = await samePlate(code);
+  if (dup) return bad(`ทะเบียนนี้ซ้ำกับรถ ${dup} ที่มีอยู่แล้ว (ไม่นับตัวพิมพ์เล็ก-ใหญ่ เว้นวรรค จุด และขีด)`);
   try {
     const v = await prisma.vehicle.create({ data: { code, model: formStr(fd, "model", 100), ...nums } });
     return ok({ redirect: `/office/vehicles/${v.id}` });

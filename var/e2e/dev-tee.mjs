@@ -1,11 +1,11 @@
-// next dev on :3001 with its output also written to var/e2e/dev.log, so e2e.mjs can check every LINE
-// dry-run message. LINE_CHANNEL_SECRET only signs the webhook test (no channel id = still dry-run);
-// LINE_RICHMENU_DRIVER makes approving a driver link a rich menu.
+// next dev on 127.0.0.1:3001 only (DEV_LOGIN and the dev server's own tools let anyone in: not on the LAN) with its
+// output also written to var/e2e/dev.log, so e2e.mjs can check every LINE dry-run message. LINE_CHANNEL_SECRET only
+// signs the webhook test (no channel id = still dry-run); LINE_RICHMENU_DRIVER makes approving a driver link a rich menu.
 import { spawn } from "child_process";
 import { createWriteStream } from "fs";
 
 const log = createWriteStream(new URL("./dev.log", import.meta.url));
-const p = spawn(process.execPath, ["node_modules/next/dist/bin/next", "dev", "-p", "3001"], {
+const p = spawn(process.execPath, ["node_modules/next/dist/bin/next", "dev", "-H", "127.0.0.1", "-p", "3001"], {
   stdio: ["ignore", "pipe", "pipe"],
   env: { ...process.env, LINE_CHANNEL_SECRET: "dev-line-secret", LINE_RICHMENU_DRIVER: "richmenu-dev-driver" },
 });

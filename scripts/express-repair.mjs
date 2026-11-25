@@ -12,11 +12,11 @@
 // an RR with this tax invoice is reported, not written again; each write leaves
 // var/repair-ledger/<order id>.json.
 import { spawnSync } from "child_process";
-import { writeFileSync, mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync } from "fs";
+import { writeFileSync, mkdtempSync, rmSync, mkdirSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
 import { fileURLToPath } from "url";
-import { readDbf } from "./express/dbf.mjs";
+import { readDbf, stuckLedger, stuckText, ledgerTime, noResult } from "./express/dbf.mjs";
 import { planRepair } from "./express/repair.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -34,27 +34,22 @@ export function readRepairTables(dir) {
 export function writeRepair(dir, plan) {
   mkdirSync(REPAIR_LEDGER_DIR, { recursive: true });
   const ledger = path.join(REPAIR_LEDGER_DIR, `${plan.orderId}.json`);
-  // A run that died half way, or could not undo itself, needs a person first.
-  if (existsSync(ledger)) {
-    let prev = {};
-    try {
-      prev = JSON.parse(readFileSync(ledger, "utf8").replace(/^\uFEFF/, ""));
-    } catch {}
-    if (prev.status === "writing" || prev.status === "ROLLBACK-FAILED") {
-      return { ok: false, stuck: true, error: `บิลซ่อมนี้เขียนลง Express ค้างไว้ไม่สมบูรณ์ (${prev.status} ${prev.poNo || ""} ${prev.rrNo || ""}) ต้องตรวจใน Express ก่อน: ${ledger}` };
-    }
-  }
+  // A run that died half way, could not undo itself, or left a ledger that cannot be read needs a person first.
+  const prev = stuckLedger(ledger);
+  if (prev) return { ok: false, stuck: true, error: stuckText(prev, ledger) };
   const tmp = mkdtempSync(path.join(tmpdir(), "repair-"));
   try {
     const planFile = path.join(tmp, "plan.json");
     writeFileSync(planFile, JSON.stringify(plan), "utf8");
+    const before = ledgerTime(ledger);
     const r = spawnSync(
       PS32,
       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(here, "express", "repair-write.ps1"), "-Dir", dir, "-PlanFile", planFile, "-Ledger", ledger],
       { encoding: "utf8", timeout: 180000 }
     );
     const line = (r.stdout || "").split(/\r?\n/).find((l) => l.startsWith("RESULT:"));
-    if (!line) return { ok: false, error: `writer gave no result: ${(r.stderr || r.stdout || r.error?.message || "").trim().slice(0, 300)}` };
+    // Killed by the timeout above (no rollback) or never started: its ledger says how far it got.
+    if (!line) return noResult(ledger, before, r, (l) => ({ poNo: l.poNo, rrNo: l.rrNo }));
     const res = line.slice(7);
     const docs = (s) => {
       const [poNo = "", rrNo = ""] = s.split("|");

@@ -17,12 +17,37 @@
 # page otherwise, and some Thai letters then end a string).
 #
 # Prints one line: RESULT:OK:<docnum> | RESULT:EXISTS:<docnum> | RESULT:BUSY:<why> | RESULT:ERR:<message>
+#
+# Test hooks, for the TESTR3 company only (R3_TEST_FAIL_AT, never set in normal runs):
+#   before-apbal  fails with everything but APBAL written: ledger "rolled-back", Express as before the run
+#   replace       a new R3's journal header REPLACE fails after its blank row was logged: that row and the
+#                 lines are deleted, ledger "rolled-back"
+#   kill          the process ends after the first new line, as a timeout or a power cut would: the ledger
+#                 stays "writing" and the agent holds every R3. Once a person has moved the ledger, a new
+#                 R3 of that date takes the next number, and a day's R3 with the extra line is refused
+#                 (its lines no longer add up, r3.mjs)
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $inv = [Globalization.CultureInfo]::InvariantCulture
 $plan = [IO.File]::ReadAllText($PlanFile, [Text.Encoding]::UTF8) | ConvertFrom-Json
 $state = [ordered]@{ pk = $plan.pkNo; mode = $plan.mode; dir = $Dir; started = (Get-Date).ToString("s"); status = "writing"; docNo = ""; added = @(); changed = @() }
-function Save-Ledger { [IO.File]::WriteAllText($Ledger, ($state | ConvertTo-Json -Depth 6), [Text.Encoding]::UTF8) }
+# Atomic: a temp file next to the ledger, flushed to disk, then swapped in. A power cut
+# leaves the previous ledger or this one, never a torn or empty file. A virus scanner or
+# backup tool holding the new file for a moment fails the swap: it is tried again.
+function Save-Ledger {
+  $tmp = "$Ledger.tmp"
+  $w = New-Object IO.StreamWriter($tmp, $false, [Text.Encoding]::UTF8)
+  try { $w.Write(($state | ConvertTo-Json -Depth 6)); $w.Flush(); $w.BaseStream.Flush($true) } finally { $w.Dispose() }
+  for ($i = 1; ; $i++) {
+    try {
+      if ([IO.File]::Exists($Ledger)) { [IO.File]::Replace($tmp, $Ledger, [NullString]::Value) } else { [IO.File]::Move($tmp, $Ledger) }
+      return
+    } catch [IO.IOException], [UnauthorizedAccessException] {
+      if ($i -ge 40) { throw }
+      Start-Sleep -Milliseconds 250
+    }
+  }
+}
 
 $cn = New-Object System.Data.OleDb.OleDbConnection("Provider=VFPOLEDB.1;Data Source=$Dir;Collating Sequence=MACHINE;")
 function Run([string]$body, [object[]]$params = @()) {
@@ -38,24 +63,35 @@ function Run([string]$body, [object[]]$params = @()) {
 function D([string]$p) { "DATE(VAL(LEFT($p, 4)), VAL(SUBSTR($p, 5, 2)), VAL(RIGHT($p, 2)))" }
 function N2([double]$n) { $n.ToString("F2", $inv) }
 
-# Append one record; its record number goes to the ledger at once.
+# Each step that writes ends with FLUSH IN <alias> FORCE (the rollback's too), and a step that
+# REPLACEs a field of an existing row (Change, the rollback's) then goes back to that row (GO again).
+# The provider keeps a change to a row its connection holds locked in memory until the record pointer
+# is set again, unlock or close, and FLUSH alone does not write it: a killed write lost the ISRUN /
+# STMAS changes its ledger listed, flushed or not (TESTR3 2026-11-24). With the second GO they are on
+# disk and the row stays locked (scratch copies of TESTR3's tables, 2026-11-25). So all the ledger
+# lists is on disk but perhaps its last entry (logged just before its step).
+# Append one record; its record number goes to the ledger before its fields are
+# filled, so a failing REPLACE leaves no row the rollback does not know about.
 function Append([string]$alias, [string]$assign, [object[]]$params) {
-  $r = Run ("SELECT $alias`r`nAPPEND BLANK`r`nREPLACE $assign IN $alias`r`nRETURN TRANSFORM(RECNO('$alias'))") $params
-  $state.added += , @($alias, [int]$r); Save-Ledger
-  return [int]$r
+  $r = [int](Run "SELECT $alias`r`nAPPEND BLANK`r`nFLUSH IN $alias FORCE`r`nRETURN TRANSFORM(RECNO('$alias'))")
+  $state.added += , @($alias, $r); Save-Ledger
+  if ($env:R3_TEST_FAIL_AT -eq "replace" -and $alias -eq "r3gj") { $assign = "voudat WITH 'x'" } # test hook: text into a date
+  [void](Run ("GO $r IN $alias`r`nREPLACE $assign IN $alias`r`nFLUSH IN $alias FORCE`r`nRETURN 'ok'") $params)
+  return $r
 }
 # Change one field of one record; the old value goes to the ledger first.
 # $expr is the new value, written with p4… for $params (p1 recno, p2 alias, p3 field).
 function Change([string]$alias, [int]$recno, [string]$field, [string]$expr, [object[]]$params = @()) {
   $old = Run "GO VAL(p1) IN (p2)`r`nLOCAL t, v`r`nt = TYPE(p2 + '.' + p3)`r`nv = EVALUATE(p2 + '.' + p3)`r`nRETURN t + '|' + ICASE(t `$ 'NBYIF', STR(v, 25, 10), t = 'D', DTOS(v), t = 'L', IIF(v, 'T', 'F'), v)" @($recno, $alias, $field)
   $state.changed += , [ordered]@{ alias = $alias; recno = $recno; field = $field; old = $old }; Save-Ledger
-  [void](Run ("GO VAL(p1) IN (p2)`r`nREPLACE (p3) WITH $expr IN (p2)`r`nRETURN 'ok'") (@($recno, $alias, $field) + $params))
+  [void](Run ("GO VAL(p1) IN (p2)`r`nREPLACE (p3) WITH $expr IN (p2)`r`nGO VAL(p1) IN (p2)`r`nFLUSH IN (p2) FORCE`r`nRETURN 'ok'") (@($recno, $alias, $field) + $params))
 }
 # One fuel line of the R3: item 2120-03, the vehicle and its H3 as description.
 function Add-Line([string]$doc, [int]$seq, $l) {
   [void](Append "r3st" ("stkcod WITH p3, loccod WITH '-', docnum WITH p2, seqnum WITH PADL(p4, 3), docdat WITH $(D 'p1'), posopr WITH '0', people WITH p5, " +
     "trnqty WITH 1, tqucod WITH p6, tfactor WITH 1, unitpr WITH VAL(p8), trnval WITH VAL(p8), xtrnqty WITH 1, xunitpr WITH VAL(p8), xtrnval WITH VAL(p8), " +
     "xsalval WITH VAL(p8), netval WITH VAL(p8), stkdes WITH p7") @($date, $doc, $plan.item, $seq, $plan.supCode, $plan.unit, $l.desc, (N2 ([double]$l.amount))))
+  if ($env:R3_TEST_FAIL_AT -eq "kill") { [Environment]::Exit(1) } # test hook (see the top)
 }
 
 $total = 0.0; foreach ($l in $plan.lines) { $total += [double]$l.amount }
@@ -125,8 +161,14 @@ try {
     Change "r3gi" ([int]$g[1]) "amount" "r3gi.amount + VAL(p4)" @($total)
     Change "r3gi" ([int]$g[2]) "amount" "r3gi.amount + VAL(p4)" @($total)
   } else {
-    # Next free R3YYMMDD-NN (deleted rows count too: numbers are never reused).
-    $doc = Run "LOCAL n`r`nn = 0`r`nSELECT r3ap`r`nSCAN FOR LEFT(docnum, LEN(p1)) == p1`r`nn = MAX(n, VAL(SUBSTR(docnum, LEN(p1) + 1, 2)))`r`nENDSCAN`r`nRETURN IIF(n >= 99, '', p1 + PADL(TRANSFORM(n + 1), 2, '0'))" @($plan.prefix)
+    # Next free R3YYMMDD-NN past every number the tables of this write hold, deleted rows too (numbers
+    # are never reused). The header goes in last: a write cut off part way leaves lines and journal rows
+    # under its number with no APTRN row, and the next R3 of that date must not merge with them.
+    $scan = ""
+    foreach ($f in @(@("r3ap", "docnum"), @("r3st", "docnum"), @("r3gj", "voucher"))) {
+      $scan += "SELECT $($f[0])`r`nSCAN FOR LEFT($($f[1]), LEN(p1)) == p1`r`nn = MAX(n, VAL(SUBSTR($($f[1]), LEN(p1) + 1, 2)))`r`nENDSCAN`r`n"
+    }
+    $doc = Run ("LOCAL n`r`nn = 0`r`n" + $scan + "RETURN IIF(n >= 99, '', p1 + PADL(TRANSFORM(n + 1), 2, '0'))") @($plan.prefix)
     if (-not $doc) { throw "เลขที่ R3 ของวันนี้เต็ม (99)" }
     $state.docNo = $doc; Save-Ledger
 
@@ -166,12 +208,12 @@ try {
   try {
     if ($cn.State -eq "Open") {
       $added = @($state.added); [array]::Reverse($added)
-      foreach ($a in $added) { [void](Run "GO VAL(p2) IN (p1)`r`nDELETE IN (p1)`r`nRETURN 'ok'" @($a[0], $a[1])) }
+      foreach ($a in $added) { [void](Run "GO VAL(p2) IN (p1)`r`nDELETE IN (p1)`r`nFLUSH IN (p1) FORCE`r`nRETURN 'ok'" @($a[0], $a[1])) }
       $changed = @($state.changed); [array]::Reverse($changed)
       foreach ($c in $changed) {
         $t = $c.old.Substring(0, 1); $v = $c.old.Substring(2)
         $expr = switch ($t) { "D" { "IIF(EMPTY(p4), {}, $(D 'p4'))" } "L" { "p4 == 'T'" } "C" { "p4" } default { "VAL(p4)" } }
-        [void](Run ("GO VAL(p1) IN (p2)`r`nREPLACE (p3) WITH $expr IN (p2)`r`nRETURN 'ok'") @($c.recno, $c.alias, $c.field, $v))
+        [void](Run ("GO VAL(p1) IN (p2)`r`nREPLACE (p3) WITH $expr IN (p2)`r`nGO VAL(p1) IN (p2)`r`nFLUSH IN (p2) FORCE`r`nRETURN 'ok'") @($c.recno, $c.alias, $c.field, $v))
       }
       $state.status = "rolled-back"
     } else { $state.status = "failed-unopened" }
@@ -179,8 +221,13 @@ try {
     $state.status = "ROLLBACK-FAILED"
     $err = "$err | ย้อนกลับไม่สำเร็จ: $($_.Exception.Message)"
   }
-  $state.error = $err; Save-Ledger
+  $state.error = $err
   $result = "ERR:$err"
+  # The ledger still says writing when this save fails: the message says how far the rollback got.
+  try { Save-Ledger } catch {
+    $done = if ($state.status -eq "rolled-back") { " แต่ย้อนกลับใน Express ครบแล้ว" } else { "" }
+    $result = "ERR:$err | บันทึก ledger ไม่สำเร็จ ($($_.Exception.Message))$done"
+  }
 } finally {
   if ($cn.State -eq "Open") {
     $close = "UNLOCK ALL`r`n"

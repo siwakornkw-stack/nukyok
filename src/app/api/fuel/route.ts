@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
 import { apiUser } from "@/lib/session";
 import { bad, formFiles, formNum, formStr, ok, readForm } from "@/lib/http";
-import { saveUpload, UploadError } from "@/lib/storage";
+import { removeUpload, saveUpload, UploadError } from "@/lib/storage";
 import { requestFuel } from "@/lib/actions";
 
 // คนขับ asks for fuel: vehicle + engine hours + dashboard photo (+ odometer and its photo when the vehicle has one)
@@ -31,10 +31,13 @@ export async function POST(req: Request) {
       async () => {
         if (!photo) throw new UploadError("กรุณาถ่ายรูปหน้าปัด");
         if (odometer !== null && !odoPhoto) throw new UploadError("กรุณาถ่ายรูปเลขไมค์");
-        return {
-          dashPhoto: await saveUpload(photo, "fuel-dash"),
-          odoPhoto: odoPhoto && odometer !== null ? await saveUpload(odoPhoto, "fuel-dash") : null,
-        };
+        const dashPhoto = await saveUpload(photo, "fuel-dash");
+        try {
+          return { dashPhoto, odoPhoto: odoPhoto && odometer !== null ? await saveUpload(odoPhoto, "fuel-dash") : null };
+        } catch (e) {
+          await removeUpload(dashPhoto); // the odometer photo refused: no request, so no dashboard photo either
+          throw e;
+        }
       }
     );
     if ("error" in r) return bad(r.error, r.status);

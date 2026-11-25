@@ -9,12 +9,36 @@
 # records are deleted and the changed fields put back.
 #
 # Prints one line: RESULT:OK:<pk>|<h3> | RESULT:EXISTS:<pk>|<h3> | RESULT:BUSY:<why> | RESULT:ERR:<message>
+#
+# Test hooks, for the TESTR3 company only (FUEL_TEST_FAIL_AT, never set in normal runs):
+#   before-apbal  fails with everything but APBAL written: ledger "rolled-back", Express as before the run
+#   replace       the H3 journal header's REPLACE fails after its blank row was logged: that row and the
+#                 stock line are deleted, ledger "rolled-back"
+#   kill          the process ends after the H3 stock line, as a timeout or a power cut would: the ledger
+#                 stays "writing" and the agent holds every fuel bill; once a person has moved the ledger,
+#                 the next H3 of that date takes the next number, not the one the stock line holds
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $inv = [Globalization.CultureInfo]::InvariantCulture
 $plan = [IO.File]::ReadAllText($PlanFile, [Text.Encoding]::UTF8) | ConvertFrom-Json
 $state = [ordered]@{ order = $plan.orderId; invoice = $plan.invoice; dir = $Dir; started = (Get-Date).ToString("s"); status = "writing"; pkNo = ""; h3No = ""; added = @(); changed = @() }
-function Save-Ledger { [IO.File]::WriteAllText($Ledger, ($state | ConvertTo-Json -Depth 6), [Text.Encoding]::UTF8) }
+# Atomic: a temp file next to the ledger, flushed to disk, then swapped in. A power cut
+# leaves the previous ledger or this one, never a torn or empty file. A virus scanner or
+# backup tool holding the new file for a moment fails the swap: it is tried again.
+function Save-Ledger {
+  $tmp = "$Ledger.tmp"
+  $w = New-Object IO.StreamWriter($tmp, $false, [Text.Encoding]::UTF8)
+  try { $w.Write(($state | ConvertTo-Json -Depth 6)); $w.Flush(); $w.BaseStream.Flush($true) } finally { $w.Dispose() }
+  for ($i = 1; ; $i++) {
+    try {
+      if ([IO.File]::Exists($Ledger)) { [IO.File]::Replace($tmp, $Ledger, [NullString]::Value) } else { [IO.File]::Move($tmp, $Ledger) }
+      return
+    } catch [IO.IOException], [UnauthorizedAccessException] {
+      if ($i -ge 40) { throw }
+      Start-Sleep -Milliseconds 250
+    }
+  }
+}
 
 $cn = New-Object System.Data.OleDb.OleDbConnection("Provider=VFPOLEDB.1;Data Source=$Dir;Collating Sequence=MACHINE;")
 function Run([string]$body, [object[]]$params = @()) {
@@ -30,19 +54,35 @@ function Run([string]$body, [object[]]$params = @()) {
 function D([string]$p) { "DATE(VAL(LEFT($p, 4)), VAL(SUBSTR($p, 5, 2)), VAL(RIGHT($p, 2)))" }
 function N2([double]$n) { $n.ToString("F2", $inv) }
 function N4([double]$n) { $n.ToString("F4", $inv) }
+# This supplier's tax invoice is in another H3 / PK of Express: the words of fuel.mjs.
+function Possible-Duplicate([string]$theirs) {
+  "อาจซ้ำ: ใบกำกับ $($plan.invoice) ของผู้จำหน่ายนี้มี $theirs ใน Express แล้ว ไม่ตรงกับบิลนี้ (รถ $($plan.item.code) ยอด $(N2 $plan.total)) " +
+    "อาจเป็นใบกำกับที่แบ่งเติมหลายคัน ตรวจใน Express ถ้ายังไม่มีบิลนี้ให้กด `"ยืนยันว่าไม่ซ้ำ`" หรือคีย์เอง"
+}
 
-# Append one record; its record number goes to the ledger at once.
+# Each step that writes ends with FLUSH IN <alias> FORCE (the rollback's too), and a step that
+# REPLACEs a field of an existing row (Change, the rollback's) then goes back to that row (GO again).
+# The provider keeps a change to a row its connection holds locked in memory until the record pointer
+# is set again, unlock or close, and FLUSH alone does not write it: a killed write lost the ISRUN /
+# STMAS changes its ledger listed, flushed or not (TESTR3 2026-11-24). With the second GO they are on
+# disk and the row stays locked (scratch copies of TESTR3's tables, 2026-11-25). So all the ledger
+# lists is on disk but perhaps its last entry (logged just before its step).
+# Append one record; its record number goes to the ledger before its fields are
+# filled, so a failing REPLACE leaves no row the rollback does not know about.
 function Append([string]$alias, [string]$assign, [object[]]$params) {
-  $r = Run ("SELECT $alias`r`nAPPEND BLANK`r`nREPLACE $assign IN $alias`r`nRETURN TRANSFORM(RECNO('$alias'))") $params
-  $state.added += , @($alias, [int]$r); Save-Ledger
-  return [int]$r
+  if ($env:FUEL_TEST_FAIL_AT -eq "kill" -and $alias -eq "fwgj") { [Environment]::Exit(1) } # test hook (see the top)
+  $r = [int](Run "SELECT $alias`r`nAPPEND BLANK`r`nFLUSH IN $alias FORCE`r`nRETURN TRANSFORM(RECNO('$alias'))")
+  $state.added += , @($alias, $r); Save-Ledger
+  if ($env:FUEL_TEST_FAIL_AT -eq "replace" -and $alias -eq "fwgj") { $assign = "voudat WITH 'x'" } # test hook: text into a date
+  [void](Run ("GO $r IN $alias`r`nREPLACE $assign IN $alias`r`nFLUSH IN $alias FORCE`r`nRETURN 'ok'") $params)
+  return $r
 }
 # Change one field of one record; the old value goes to the ledger first.
 # $expr is the new value, written with p4… for $params (p1 recno, p2 alias, p3 field).
 function Change([string]$alias, [int]$recno, [string]$field, [string]$expr, [object[]]$params = @()) {
   $old = Run "GO VAL(p1) IN (p2)`r`nLOCAL t, v`r`nt = TYPE(p2 + '.' + p3)`r`nv = EVALUATE(p2 + '.' + p3)`r`nRETURN t + '|' + ICASE(t `$ 'NBYIF', STR(v, 25, 10), t = 'D', DTOS(v), t = 'L', IIF(v, 'T', 'F'), v)" @($recno, $alias, $field)
   $state.changed += , [ordered]@{ alias = $alias; recno = $recno; field = $field; old = $old }; Save-Ledger
-  [void](Run ("GO VAL(p1) IN (p2)`r`nREPLACE (p3) WITH $expr IN (p2)`r`nRETURN 'ok'") (@($recno, $alias, $field) + $params))
+  [void](Run ("GO VAL(p1) IN (p2)`r`nREPLACE (p3) WITH $expr IN (p2)`r`nGO VAL(p1) IN (p2)`r`nFLUSH IN (p2) FORCE`r`nRETURN 'ok'") (@($recno, $alias, $field) + $params))
 }
 
 $date = ([string]$plan.date) -replace "-", ""
@@ -57,19 +97,44 @@ try {
   foreach ($t in $tables) { $open += "USE $($t[0]) INDEX $($t[0]) SHARED IN 0 ALIAS $($t[1])`r`n" }
   [void](Run ($open + "RETURN 'ok'"))
 
-  # Already in Express? (staff may have keyed this bill, perhaps under another
-  # branch's supplier code, then with the same amount; or an earlier run wrote it)
+  # Already in Express? An H3 for this tax invoice with the same amount (staff may have
+  # keyed this bill, perhaps under another branch's supplier code; or an earlier run wrote it)
   $h3 = Run ("SELECT fwap`r`nLOCATE FOR LEFT(docnum, 2) == 'H3' AND ALLTRIM(refnum) == ALLTRIM(p2) AND docstat # 'C' AND NOT DELETED() AND " +
-    "(supcod == PADR(p1, LEN(supcod)) OR ROUND(netamt, 2) = ROUND(VAL(p3), 2))`r`nRETURN IIF(FOUND(), ALLTRIM(fwap.docnum) + '|' + ALLTRIM(fwap.ponum), '')") @($plan.supplier.code, $plan.invoice, (N2 $plan.total))
+    "ROUND(netamt, 2) = ROUND(VAL(p3), 2)`r`nRETURN IIF(FOUND(), ALLTRIM(fwap.docnum) + '|' + ALLTRIM(fwap.ponum), '')") @($plan.supplier.code, $plan.invoice, (N2 $plan.total))
   if ($h3) { $p = $h3.Split("|"); $state.status = "exists"; $state.h3No = $p[0]; $state.pkNo = $p[1]; Save-Ledger; $result = "EXISTS:$($p[1])|$($p[0])"; return }
+  # The invoice from this supplier in another H3 (split over several vehicles, or this bill keyed
+  # with another amount): a person checks, as fuel.mjs refuses it, unless Office confirmed that
+  # it is not this bill (force).
+  if (-not $plan.force) {
+    $split = Run ("SELECT fwap`r`nLOCATE FOR LEFT(docnum, 2) == 'H3' AND ALLTRIM(refnum) == ALLTRIM(p2) AND docstat # 'C' AND NOT DELETED() AND " +
+      "supcod == PADR(p1, LEN(supcod))`r`nRETURN IIF(FOUND(), ALLTRIM(fwap.docnum) + '|' + ALLTRIM(STR(fwap.netamt, 15, 2)), '')") @($plan.supplier.code, $plan.invoice)
+    if ($split) { $p = $split.Split("|"); throw (Possible-Duplicate "$($p[0]) (ยอด $($p[1]))") }
+  }
   $pkNo = [string]$plan.pkNo
   $pkRec = 0
   if ($pkNo) {
     $pkRec = [int](Run "SELECT fwpo`r`nLOCATE FOR ponum == PADR(p1, LEN(ponum)) AND NOT DELETED()`r`nRETURN IIF(FOUND(), TRANSFORM(RECNO('fwpo')), '0')" @($pkNo))
     if (-not $pkRec) { throw "ไม่พบ $pkNo ใน POPR" }
   } else {
-    $pkFound = Run "SELECT fwpo`r`nLOCATE FOR LEFT(ponum, 2) == 'PK' AND supcod == PADR(p1, LEN(supcod)) AND podat = $(D 'p2') AND ALLTRIM(youref) == ALLTRIM(p3) AND docstat # 'C' AND NOT DELETED()`r`nRETURN IIF(FOUND(), ALLTRIM(fwpo.ponum) + '|' + TRANSFORM(RECNO('fwpo')), '')" @($plan.supplier.code, $date, $plan.invoice)
-    if ($pkFound) { $p = $pkFound.Split("|"); $pkNo = $p[0]; $pkRec = [int]$p[1] }
+    # A PK an earlier run opened for this bill: this supplier, date and invoice ("อ้างอิง"), this
+    # amount and vehicle (its line). Another PK of this supplier, date and invoice is another
+    # vehicle's part of the invoice, or this bill with another amount: as fuel.mjs, unless forced.
+    $pkFound = Run ("LOCAL k, veh, hit, oth`r`nhit = ''`r`noth = ''`r`nSELECT fwpo`r`n" +
+      "SCAN FOR LEFT(ponum, 2) == 'PK' AND supcod == PADR(p1, LEN(supcod)) AND podat = $(D 'p2') AND ALLTRIM(youref) == ALLTRIM(p3) AND docstat # 'C' AND NOT DELETED()`r`n" +
+      "k = ALLTRIM(fwpo.ponum)`r`nSELECT fwpi`r`nLOCATE FOR ponum == PADR(k, LEN(ponum)) AND NOT DELETED()`r`nveh = IIF(FOUND(), ALLTRIM(fwpi.stkcod), '')`r`nSELECT fwpo`r`n" +
+      "IF ROUND(fwpo.netamt, 2) = ROUND(VAL(p4), 2) AND veh == ALLTRIM(p5)`r`nhit = k + '|' + TRANSFORM(RECNO('fwpo'))`r`nEXIT`r`nENDIF`r`n" +
+      "IF EMPTY(oth)`r`noth = k + '|' + veh + '|' + ALLTRIM(STR(fwpo.netamt, 15, 2))`r`nENDIF`r`nENDSCAN`r`n" +
+      "RETURN ICASE(NOT EMPTY(hit), 'M|' + hit, NOT EMPTY(oth), 'X|' + oth, '')") @($plan.supplier.code, $date, $plan.invoice, (N2 $plan.total), $plan.item.code)
+    $p = $pkFound.Split("|")
+    if ($p[0] -eq "M") { $pkNo = $p[1]; $pkRec = [int]$p[2] }
+    if ($p[0] -eq "X" -and -not $plan.force) { throw (Possible-Duplicate "$($p[1]) (รถ $($p[2]) ยอด $($p[3]))") }
+  }
+  # Input VAT needs the seller's tax ID on the ISVAT row (repair.mjs hasTaxId: 13 digits, not one digit
+  # 13 times). The web queues the PK only for such a pump (masters vat false), but an order queued
+  # earlier, or before staff blanked the ID, still asks for the H3.
+  $taxId = [string]$plan.supplier.taxId
+  if ($plan.withH3 -and -not ($taxId -cmatch '^[0-9]{13}$' -and $taxId -cnotmatch '^([0-9])\1{12}$')) {
+    throw "ปั๊ม $($plan.supplier.code) ไม่มีเลขประจำตัวผู้เสียภาษีใน Express: กด `"ลองใหม่`" ให้เปิดเฉพาะ PK แล้วคีย์ H3 เอง"
   }
   if ($pkNo -and -not $plan.withH3) { $state.status = "exists"; $state.pkNo = $pkNo; Save-Ledger; $result = "EXISTS:$pkNo|"; return }
 
@@ -112,9 +177,17 @@ try {
 
   # ---- H3 ----
   if ($plan.withH3) {
-    $h3No = Run "LOCAL n`r`nn = 0`r`nSELECT fwap`r`nSCAN FOR LEFT(docnum, LEN(p1)) == p1`r`nn = MAX(n, VAL(SUBSTR(docnum, LEN(p1) + 1, 2)))`r`nENDSCAN`r`nRETURN IIF(n >= 99, '', p1 + PADL(TRANSFORM(n + 1), 2, '0'))" @($plan.h3Prefix)
+    # Next H3<BEyymmdd>-NN past every number the tables of this write hold, deleted rows too (numbers
+    # are never reused). The header goes in last: a write cut off part way leaves stock, journal, VAT
+    # and payment rows under its number with no APTRN row, and the next bill must not merge with them.
+    $scan = ""
+    foreach ($f in @(@("fwap", "docnum"), @("fwst", "docnum"), @("fwgj", "voucher"), @("fwvt", "docnum"), @("fwpc", "rcpnum"))) {
+      $scan += "SELECT $($f[0])`r`nSCAN FOR LEFT($($f[1]), LEN(p1)) == p1`r`nn = MAX(n, VAL(SUBSTR($($f[1]), LEN(p1) + 1, 2)))`r`nENDSCAN`r`n"
+    }
+    $h3No = Run ("LOCAL n`r`nn = 0`r`n" + $scan + "RETURN IIF(n >= 99, '', p1 + PADL(TRANSFORM(n + 1), 2, '0'))") @($plan.h3Prefix)
     if (-not $h3No) { throw "เลขที่ H3 ของวันนี้เต็ม (99)" }
-    $state.h3No = $h3No; Save-Ledger
+    # The PK too, before any H3 row: an existing one (the plan's or the match above) is not in the ledger yet.
+    $state.pkNo = $pkNo; $state.h3No = $h3No; Save-Ledger
     $piRec = [int](Run "SELECT fwpi`r`nLOCATE FOR ponum == PADR(p1, LEN(ponum)) AND seqnum == '  1' AND NOT DELETED()`r`nRETURN IIF(FOUND(), TRANSFORM(RECNO('fwpi')), '0')" @($pkNo))
     if (-not $piRec) { throw "ไม่พบรายการของ $pkNo ใน POPRIT" }
 
@@ -164,12 +237,12 @@ try {
   try {
     if ($cn.State -eq "Open") {
       $added = @($state.added); [array]::Reverse($added)
-      foreach ($a in $added) { [void](Run "GO VAL(p2) IN (p1)`r`nDELETE IN (p1)`r`nRETURN 'ok'" @($a[0], $a[1])) }
+      foreach ($a in $added) { [void](Run "GO VAL(p2) IN (p1)`r`nDELETE IN (p1)`r`nFLUSH IN (p1) FORCE`r`nRETURN 'ok'" @($a[0], $a[1])) }
       $changed = @($state.changed); [array]::Reverse($changed)
       foreach ($c in $changed) {
         $t = $c.old.Substring(0, 1); $v = $c.old.Substring(2)
         $expr = switch ($t) { "D" { "IIF(EMPTY(p4), {}, $(D 'p4'))" } "L" { "p4 == 'T'" } "C" { "p4" } default { "VAL(p4)" } }
-        [void](Run ("GO VAL(p1) IN (p2)`r`nREPLACE (p3) WITH $expr IN (p2)`r`nRETURN 'ok'") @($c.recno, $c.alias, $c.field, $v))
+        [void](Run ("GO VAL(p1) IN (p2)`r`nREPLACE (p3) WITH $expr IN (p2)`r`nGO VAL(p1) IN (p2)`r`nFLUSH IN (p2) FORCE`r`nRETURN 'ok'") @($c.recno, $c.alias, $c.field, $v))
       }
       $state.status = "rolled-back"
     } else { $state.status = "failed-unopened" }
@@ -177,8 +250,13 @@ try {
     $state.status = "ROLLBACK-FAILED"
     $err = "$err | ย้อนกลับไม่สำเร็จ: $($_.Exception.Message)"
   }
-  $state.error = $err; Save-Ledger
+  $state.error = $err
   $result = "ERR:$err"
+  # The ledger still says writing when this save fails: the message says how far the rollback got.
+  try { Save-Ledger } catch {
+    $done = if ($state.status -eq "rolled-back") { " แต่ย้อนกลับใน Express ครบแล้ว" } else { "" }
+    $result = "ERR:$err | บันทึก ledger ไม่สำเร็จ ($($_.Exception.Message))$done"
+  }
 } finally {
   if ($cn.State -eq "Open") {
     $close = "UNLOCK ALL`r`n"

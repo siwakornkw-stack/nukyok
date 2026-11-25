@@ -1,6 +1,6 @@
 import { apiUser } from "@/lib/session";
 import { bad, formFiles, formNum, formStr, ok, readForm } from "@/lib/http";
-import { saveUpload, UploadError } from "@/lib/storage";
+import { removeUpload, saveUpload, UploadError } from "@/lib/storage";
 import { openRepair } from "@/lib/actions";
 
 // คนขับแจ้งซ่อม -> quote (จัดซื้อหาใบเสนอราคา). Urgent ones also reach the executives at once.
@@ -29,7 +29,12 @@ export async function POST(req: Request) {
       async () => {
         if (files.length < 1 || files.length > 10) throw new UploadError("แนบรูปอาการเสีย 1-10 รูป");
         const keys: string[] = [];
-        for (const f of files) keys.push(await saveUpload(f, "repair"));
+        try {
+          for (const f of files) keys.push(await saveUpload(f, "repair"));
+        } catch (e) {
+          await Promise.all(keys.map(removeUpload)); // one photo refused: no report, so none of them is kept
+          throw e;
+        }
         return keys;
       }
     );

@@ -5,6 +5,15 @@ import { MENU } from "@/lib/menu";
 import { Icon, Notice, type IconName } from "@/components/ui";
 import { hasRole } from "@/lib/roles";
 import { bkkDateKey, thDateTime } from "@/lib/time";
+import { exportToken } from "@/lib/csv";
+
+// Kinds of /api/export (read-only Google Sheets view), each with its own token.
+const SHEETS: [string, string][] = [
+  ["fuel", "เติมน้ำมัน"],
+  ["repairs", "งานซ่อม"],
+  ["attendance", "เข้างาน / ออกงาน (ไม่มีพิกัด)"],
+  ["vehicles", "ข้อมูลรถ"],
+];
 
 const TINT: Partial<Record<IconName, string>> = {
   clock: "bg-[#EFF6FF] text-[#2563EB]",
@@ -21,12 +30,20 @@ const TINT: Partial<Record<IconName, string>> = {
 };
 
 // Home = the role menu (LIFF links land on /liff first, see src/app/liff).
-// Office also sees a recent failed LINE send (src/lib/line.ts) and a monthly quota near its limit (cron daily).
+// Office also sees a recent failed LINE send (src/lib/line.ts), a monthly quota near its limit (cron daily) and the
+// Google Sheets formulas of the CSV export (while exportToken gives tokens; a notice while EXPORT_SECRET is refused).
 export default async function Home({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const sp = await searchParams;
   const u = await requirePage();
   const items = MENU.filter((m) => m.roles.some((r) => u.roles.includes(r)));
-  const settings = hasRole(u, "office") ? await prisma.appSetting.findMany({ where: { key: { in: ["line_last_error", "line_quota"] } } }) : [];
+  const office = hasRole(u, "office");
+  const base = (process.env.APP_URL || "https://nukyok.phuketnukyok.com").replace(/\/$/, "");
+  // No token for any kind while EXPORT_SECRET is unset, or weak in production (exportToken logs each refusal, so one
+  // kind is asked first): no formulas ending in "token=" that answer 404.
+  const exportOn = office && !!exportToken("fuel");
+  const sheets = exportOn ? SHEETS.map(([kind, name]) => [name, `=IMPORTDATA("${base}/api/export/${kind}?token=${exportToken(kind)}")`]) : [];
+  const exportRefused = office && !exportOn && !!process.env.EXPORT_SECRET;
+  const settings = office ? await prisma.appSetting.findMany({ where: { key: { in: ["line_last_error", "line_quota"] } } }) : [];
   const setting = (key: string) => (settings.find((s) => s.key === key)?.value ?? {}) as Record<string, unknown>;
   const lineErr = setting("line_last_error");
   const errAt = typeof lineErr.at === "string" ? new Date(lineErr.at) : null;
@@ -75,6 +92,27 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
           </Link>
         ))}
       </div>
+      {!!sheets.length && (
+        <details className="mt-6 rounded-2xl border border-line bg-card p-4 text-sm">
+          <summary className="cursor-pointer font-semibold">สูตร Google Sheets (ดูข้อมูลอย่างเดียว)</summary>
+          <p className="mt-2 text-muted">
+            วางสูตรในช่อง A1 ของชีต สูตรแต่ละอันเปิดได้เฉพาะข้อมูลชุดของตัวเอง และทุกคนที่เปิดชีตได้จะเห็นสูตรนี้ จึงแชร์ชีตให้เฉพาะคนที่ควรเห็นข้อมูลชุดนั้น
+          </p>
+          <dl className="mt-3 space-y-3">
+            {sheets.map(([name, formula]) => (
+              <div key={name}>
+                <dt className="font-medium">{name}</dt>
+                <dd className="mt-1 select-all break-all rounded-lg bg-hover px-2 py-1.5 font-mono text-xs">{formula}</dd>
+              </div>
+            ))}
+          </dl>
+        </details>
+      )}
+      {exportRefused && (
+        <Notice className="mt-6">
+          ปิดการ export ไป Google Sheets อยู่: EXPORT_SECRET ในเซิร์ฟเวอร์สั้นกว่า 16 ตัวอักษร เป็นค่าตัวอย่าง หรือขึ้นต้นด้วย dev- ให้ผู้ดูแลระบบตั้งค่าใหม่ (openssl rand -hex 32) แล้วคัดลอกสูตรใหม่จากหน้านี้
+        </Notice>
+      )}
       {/* static page in public/ (not a Next route): a plain link */}
       <p className="mt-6 flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm">
         <a href="/flowchart.html" className="font-medium text-brand hover:underline">

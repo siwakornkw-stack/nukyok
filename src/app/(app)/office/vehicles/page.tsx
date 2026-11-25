@@ -33,7 +33,15 @@ export default async function VehiclesPage() {
                   <td>{num(v.pmEveryHours, 0)}</td>
                   <td>{num(v.pmLastHours)}</td>
                   <td>{num(h)}</td>
-                  <td>{pm ? <StatusPill map={PM_STATE} value={pm.state} /> : "-"}</td>
+                  <td>
+                    {pm ? (
+                      <StatusPill map={PM_STATE} value={pm.state} />
+                    ) : v.pmEveryHours && v.pmLastHours === null ? (
+                      <span className="text-xs text-muted">ไม่ทราบเช็คล่าสุด</span>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
                   <td>{v.expressItem || "-"}</td>
                 </tr>
               );
@@ -61,7 +69,7 @@ export default async function VehiclesPage() {
             <Field label="รอบเช็คระยะ (ชม.)" hint="เช่น ทุก 500 ชม.เครื่อง">
               <input name="pmEveryHours" type="number" inputMode="numeric" min="0" step="1" className={inputCls} />
             </Field>
-            <Field label="เช็คล่าสุดที่ (ชม.เครื่อง)">
+            <Field label="เช็คล่าสุดที่ (ชม.เครื่อง)" hint="ว่างไว้ = ไม่ทราบ ระบบยังไม่เตือนเช็คระยะของคันนี้">
               <input name="pmLastHours" type="number" inputMode="decimal" min="0" step="0.1" className={inputCls} />
             </Field>
           </ApiForm>

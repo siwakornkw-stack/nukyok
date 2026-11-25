@@ -4,8 +4,8 @@ import { requirePage } from "@/lib/session";
 import { hasRole } from "@/lib/roles";
 import { EXPRESS_STATUS, R3_STATUS, expressDocs } from "@/lib/express";
 import { baht, driverOf, num } from "@/lib/format";
-import { thDateTime } from "@/lib/time";
-import { readingText, type FuelFlag } from "@/lib/fuel-checks";
+import { thDate, thDateTime } from "@/lib/time";
+import { flagCodes, readingText, type FuelFlag } from "@/lib/fuel-checks";
 import { Card, Files, FUEL_STATUS, Info, PageHeader, StatusPill, Icon } from "@/components/ui";
 import { ActionButton } from "@/components/forms";
 
@@ -20,9 +20,12 @@ export default async function OfficeFuelDetailPage({ params }: { params: Promise
   });
   if (!r) notFound();
   const flags = (Array.isArray(r.flags) ? r.flags : []) as FuelFlag[];
-  const canAct = hasRole(u, "office", "exec") && ["waiting", "filled", "returned"].includes(r.status);
-  const api = `/api/fuel/${r.id}/review`;
   const o = r.express;
+  // an approved fill can still be cancelled while the office PC has nothing of it to write (no order, its order
+  // cancelled, or keyed in Express by hand): e.g. the one a replacement tax invoice takes the place of
+  const approvedOff = r.status === "approved" && (!o || o.status === "cancelled" || o.status === "manual");
+  const canAct = hasRole(u, "office", "exec") && (["waiting", "filled", "returned"].includes(r.status) || approvedOff);
+  const api = `/api/fuel/${r.id}/review`;
 
   return (
     <>
@@ -74,6 +77,7 @@ export default async function OfficeFuelDetailPage({ params }: { params: Promise
             ["ปั๊ม", r.supplierName || "-"],
             ["รหัสผู้จำหน่าย Express", r.supplierCode || "-"],
             ["เลขที่ใบกำกับภาษี", r.invoice || "-"],
+            ["วันที่ในใบกำกับภาษี", thDate(r.invoiceDate)],
             ["รูปสลิป", <Files key="slip" keys={[r.slipPhoto]} />],
           ]}
         />
@@ -112,9 +116,11 @@ export default async function OfficeFuelDetailPage({ params }: { params: Promise
           <div className="flex flex-wrap gap-2">
             {r.status === "filled" && (
               <>
+                {/* the version shown here (reviewedAt, flag codes): a fill returned and filled again, or checked again, since
+                    cannot be approved from this page */}
                 <ActionButton
                   action={api}
-                  body={{ action: "approve" }}
+                  body={{ action: "approve", reviewedAt: r.reviewedAt?.toISOString() ?? "", flags: flagCodes(r.flags) }}
                   label="อนุมัติ"
                   primary
                   confirm={flags.length ? `มีรายการผิดปกติ ${flags.length} รายการ ยืนยันอนุมัติ #${r.no}?` : `อนุมัติรายการเติมน้ำมัน #${r.no}?`}
@@ -122,7 +128,17 @@ export default async function OfficeFuelDetailPage({ params }: { params: Promise
                 <ActionButton action={api} body={{ action: "return" }} label="ส่งกลับแก้ไข" note={{ prompt: "เหตุผลที่ส่งกลับให้คนเติมแก้ไข", required: true }} />
               </>
             )}
-            <ActionButton action={api} body={{ action: "cancel" }} label="ยกเลิก" note={{ prompt: "เหตุผลที่ยกเลิกคำขอนี้", required: true }} />
+            <ActionButton
+              action={api}
+              body={{ action: "cancel" }}
+              label="ยกเลิก"
+              note={{
+                prompt: approvedOff
+                  ? `ยกเลิกเติมน้ำมัน #${r.no} ที่อนุมัติแล้ว (ไม่นับในต้นทุนรถอีก${o?.status === "manual" ? " และต้องยกเลิก PK / H3 ที่คีย์ไว้เองใน Express ด้วย" : ""}): เหตุผล เช่น ใช้ใบกำกับที่ออกแทนในคำขออื่น`
+                  : "เหตุผลที่ยกเลิกคำขอนี้",
+                required: true,
+              }}
+            />
           </div>
         </Card>
       )}

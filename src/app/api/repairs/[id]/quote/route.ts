@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
 import { apiUser } from "@/lib/session";
 import { bad, formFiles, formNum, formStr, ok, readForm } from "@/lib/http";
-import { saveUpload, UploadError } from "@/lib/storage";
+import { removeUpload, saveUpload, UploadError } from "@/lib/storage";
 import { appLink, notifyRoles } from "@/lib/line";
 import { baht } from "@/lib/format";
 
@@ -34,10 +34,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
   const requote = r.status !== "quote";
 
+  // The files are kept only by the quotation saved below: one file refused, or the save refused or failed, takes
+  // back every file saved for it, so none is kept without a repair pointing to it.
   const keys: string[] = [];
+  const takeBack = () => Promise.all(keys.map(removeUpload));
   try {
     for (const f of files) keys.push(await saveUpload(f, "repair-quote", { pdf: true }));
   } catch (e) {
+    await takeBack();
     if (e instanceof UploadError) return bad(e.message);
     throw e;
   }
@@ -55,8 +59,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       decidedAt: null,
       decisionNote: "",
     },
+  }).catch(async (e) => {
+    await takeBack();
+    throw e;
   });
-  if (res.count !== 1) return bad("รายการนี้ถูกเปลี่ยนไปแล้ว รีเฟรชหน้า");
+  if (res.count !== 1) {
+    await takeBack();
+    return bad("รายการนี้ถูกเปลี่ยนไปแล้ว รีเฟรชหน้า");
+  }
 
   await notifyRoles(
     ["exec"],

@@ -1,9 +1,9 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { aiActor, aiUser, docNo, limitOf, query, vehicleByCode } from "@/lib/ai";
+import { UNTRUSTED, aiActor, aiUser, docNo, filterError, limitOf, query, vehicleByCode } from "@/lib/ai";
 import { bad, jsonBody, ok, str } from "@/lib/http";
 import { dec, driverOf } from "@/lib/format";
-import { dateRange, isDateKey } from "@/lib/time";
+import { dateRange } from "@/lib/time";
 import { openRepair } from "@/lib/actions";
 import { REPAIR_STATUS, URGENCY } from "@/components/ui";
 
@@ -11,22 +11,33 @@ export const dynamic = "force-dynamic";
 
 // เลขา AI, GET: repairs (งานซ่อม), newest first.
 //   ?no=12  ?status=quote|approval|approved|repairing|done|closed|rejected|cancelled  ?vehicle=CODE
-//   ?urgency=urgent|normal|canwait  ?from&to=YYYY-MM-DD (date reported)  ?limit (<= 200)
+//   ?urgency=urgent|normal|canwait  ?from&to=YYYY-MM-DD (date reported)  ?limit (<= 200).
+//   A filter that is not valid, or one this list does not take, is refused (400).
 export async function GET(req: Request) {
   const a = await aiUser(req, ["purchasing", "office", "accounting", "exec"]);
   if ("res" in a) return a.res;
+  const invalid = filterError(req, {
+    no: "no",
+    status: Object.keys(REPAIR_STATUS),
+    vehicle: null,
+    urgency: Object.keys(URGENCY),
+    from: "date",
+    to: "date",
+    limit: null,
+  });
+  if (invalid) return bad(invalid);
   const q = query(req);
   const where: Prisma.RepairRequestWhereInput = {};
   const no = docNo(q("no"));
   if (no) where.no = no;
-  if (Object.hasOwn(REPAIR_STATUS, q("status"))) where.status = q("status");
-  if (Object.hasOwn(URGENCY, q("urgency"))) where.urgency = q("urgency");
+  if (q("status")) where.status = q("status");
+  if (q("urgency")) where.urgency = q("urgency");
   if (q("vehicle")) {
     const v = await vehicleByCode(q("vehicle"));
     if (!v) return bad(`ไม่พบรถ ${q("vehicle")}`, 404);
     where.vehicleId = v.id;
   }
-  const range = dateRange(isDateKey(q("from")) ? q("from") : "", isDateKey(q("to")) ? q("to") : "");
+  const range = dateRange(q("from"), q("to"));
   if (range) where.createdAt = range;
 
   const rows = await prisma.repairRequest.findMany({
@@ -36,6 +47,7 @@ export async function GET(req: Request) {
     include: { vehicle: { select: { code: true } }, driver: { select: { name: true } } },
   });
   return ok({
+    untrusted: UNTRUSTED,
     repairs: rows.map((r) => ({
       no: r.no,
       status: REPAIR_STATUS[r.status][0],

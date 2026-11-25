@@ -62,7 +62,8 @@ export default async function MyRequestsPage() {
                 </span>
                 <StatusPill map={FUEL_STATUS} value={f.status} />
                 <span className="ml-auto text-xs text-muted">{thDateTime(f.createdAt)}</span>
-                {f.status === "waiting" && (
+                {/* a slip sent = a filler is filling it: only Office cancels it then */}
+                {f.status === "waiting" && !f.slipPhoto && (
                   <ActionButton action={`/api/fuel/${f.id}/cancel`} label="ยกเลิก" confirm={`ยกเลิกคำขอเติมน้ำมัน #${f.no}?`} />
                 )}
               </li>

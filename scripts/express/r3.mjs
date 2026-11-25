@@ -11,7 +11,7 @@
 const round2 = (n) => Math.round(n * 100) / 100;
 
 export const R3_DEFAULTS = {
-  supCode: "0009", // สุพัฒน์พงศ์ เทวาวณิชกิจ (บัตรเครดิต)
+  supCode: "0009", // the company fuel card's holder (บัตรเครดิต)
   item: "2120-03",
   unit: "คง",
   drAcc: "2120-03",
@@ -77,7 +77,20 @@ export function planR3({ pkNo, aptrn, stcrd, apmas, isprd, isrun }, opts = {}) {
 
   const r3s = new Map(aptrn.filter((r) => r.RECTYP === "3" && r.DOCNUM.startsWith("R3") && r.DOCSTAT !== "C").map((r) => [r.DOCNUM, r]));
   const r3Lines = stcrd.filter((s) => r3s.has(s.DOCNUM));
+  // Express keeps the sum of an R3's lines in AMOUNT (every live R3 of DHEWA66 and TESTR3). Lines that
+  // do not add up to it: a write cut off part way (lines added, totals not raised). Nothing is added to
+  // such an R3 and its lines do not count as booked until a person has put it right in Express.
+  const unbalanced = (doc) => {
+    const sum = round2(r3Lines.filter((s) => s.DOCNUM === doc).reduce((a, s) => a + s.TRNVAL, 0)), amount = round2(r3s.get(doc).AMOUNT);
+    return sum === amount
+      ? null
+      : { status: "error", reason: `รายการของ ${doc} รวม ${sum.toFixed(2)} ไม่เท่ากับยอดของเอกสาร (${amount.toFixed(2)}) อาจเขียนลง Express ค้างไว้ไม่สมบูรณ์ ต้องตรวจใน Express` };
+  };
   const onR3 = new Map(r3Lines.filter((s) => h3Ref(s.STKDES)).map((s) => [h3Ref(s.STKDES), s.DOCNUM]));
+  for (const doc of new Set(h3.map((h) => onR3.get(h.DOCNUM)).filter(Boolean))) {
+    const bad = unbalanced(doc);
+    if (bad) return bad;
+  }
   const todo = h3.filter((h) => !onR3.has(h.DOCNUM)).sort((a, b) => a.DOCNUM.localeCompare(b.DOCNUM));
   if (!todo.length) return { status: "exists", docNo: onR3.get(h3[0].DOCNUM) };
   const dates = [...new Set(todo.map((h) => h.DOCDAT))];
@@ -88,6 +101,12 @@ export function planR3({ pkNo, aptrn, stcrd, apmas, isprd, isrun }, opts = {}) {
   for (const h of todo) {
     const its = stcrd.filter((s) => s.DOCNUM === h.DOCNUM).sort((a, b) => Number(a.SEQNUM) - Number(b.SEQNUM));
     if (!its.length) return { status: "error", reason: `H3 ${h.DOCNUM} ไม่มีรายการสินค้า` };
+    // Express keeps the sum of a bill's lines in AMOUNT (every live H3 of DHEWA66 and TESTR3). Lines
+    // that do not add up to it: a write cut off part-way left another bill's rows under this number.
+    const sum = round2(its.reduce((a, s) => a + s.TRNVAL, 0));
+    if (sum !== round2(h.AMOUNT)) {
+      return { status: "error", reason: `รายการของ H3 ${h.DOCNUM} รวม ${sum.toFixed(2)} ไม่เท่ากับยอดของบิล (${round2(h.AMOUNT).toFixed(2)}) อาจมีบิลอื่นเขียนค้างไว้ใต้เลขเดียวกัน ต้องตรวจใน Express` };
+    }
     const amounts = allocate(h.NETAMT, its.map((s) => s.TRNVAL));
     its.forEach((s, i) => lines.push({ desc: `${s.STKCOD} /${h.DOCNUM}`.slice(0, 50), amount: amounts[i], from: h.DOCNUM }));
   }
@@ -107,6 +126,8 @@ export function planR3({ pkNo, aptrn, stcrd, apmas, isprd, isrun }, opts = {}) {
     .filter((r) => r.DOCDAT === date && r.SUPCOD === o.supCode && !/^PK\d+$/.test(r.REFNUM) && !(r.PAYAMT > 0) && round2(r.REMAMT) === round2(r.NETAMT))
     .sort((a, b) => a.DOCNUM.localeCompare(b.DOCNUM))[0];
   if (day) {
+    const bad = unbalanced(day.DOCNUM);
+    if (bad) return bad;
     const twins = r3Lines.filter((s) => s.DOCNUM === day.DOCNUM && !h3Ref(s.STKDES) && lines.some((l) => round2(s.TRNVAL) === l.amount));
     if (twins.length && !o.force) {
       return {

@@ -21,7 +21,7 @@ export default async function RegisterPage({ searchParams }: { searchParams: Pro
         <Card>
           <ApiForm action="/api/auth/register" redirect="/register" submit="ลงทะเบียน">
             <Field label="ชื่อ-นามสกุล">
-              <input name="name" required minLength={2} maxLength={80} defaultValue={u.name} autoComplete="name" className={inputCls} />
+              <input name="name" required minLength={2} maxLength={60} defaultValue={u.name} autoComplete="name" className={inputCls} />
             </Field>
             <Field label="เบอร์โทร">
               <input name="phone" type="tel" maxLength={20} defaultValue={u.phone} autoComplete="tel" className={inputCls} />

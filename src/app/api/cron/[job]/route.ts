@@ -7,7 +7,8 @@ import { dailySummary, latestHours, PM_STATE, pmState, weeklySummary } from "@/l
 import { bkkDateKey, bkkHour, bkkStart, dateOnly, thDateTime, thTime } from "@/lib/time";
 
 // Scheduled jobs, called by deploy/cron.sh from the server's crontab with "Authorization: Bearer $CRON_SECRET":
-//   tick    every 10 minutes: fuel reminders, forgotten clock-out, service due, office PC (Express) silent
+//   tick    every 10 minutes: fuel reminders, forgotten clock-out, service due, office PC (Express) silent or bills
+//           stuck in its queue
 //   daily   18:05 Bangkok: LINE summary to the Office group (+ this month's LINE quota)
 //   weekly  Monday 08:00 Bangkok: LINE summary of the last 7 days
 //   alert   POST { text }: the backup / deploy scripts tell the Office group something failed
@@ -16,6 +17,7 @@ import { bkkDateKey, bkkHour, bkkStart, dateOnly, thDateTime, thTime } from "@/l
 // 10 minutes. A failed send still shows on the Office home page (line_last_error).
 const PM_ALERT_KEY = "pm_alert"; // { [vehicleId]: "<pmLastHours>|<state>" the alert was sent for }
 const AGENT_ALERT_KEY = "express_agent_alert"; // masters.at the "office PC silent" alert was sent for
+const STUCK_ALERT_KEY = "express_stuck_alert"; // "<id>|<queued at>" of the longest-stuck Express step the alert was sent for
 
 async function tick() {
   const now = new Date();
@@ -127,7 +129,36 @@ async function tick() {
     if (agentAlerted) await prisma.appSetting.upsert({ where: { key: AGENT_ALERT_KEY }, update: { value: m.at }, create: { key: AGENT_ALERT_KEY, value: m.at } });
   }
 
-  return { fuelReminded: fuel.map((f) => f.no), clockOutAlerted: open.map((a) => a.user.name), serviceDue: due.map((d) => d.v.code), expressAgentAlerted: agentAlerted };
+  // e) The office PC answers (fresh masters) but a bill or its R3 has waited in the queue over an hour: a write step
+  // keeps failing (a locked or missing table, a full disk, a refused results POST) or stays busy. A queued row is not
+  // updated until it is done, so updatedAt is when it was queued. Told once per jam, keyed by the step stuck longest
+  // (its id and since when): a row left open in Express all night is one alert, not one an hour; the next goes out
+  // when another step becomes the one stuck longest.
+  const hourAgo = new Date(now.getTime() - 60 * 60_000);
+  const [stuck, stuckAlert] = await Promise.all([
+    prisma.expressOrder.findMany({
+      where: { updatedAt: { lt: hourAgo }, OR: [{ status: "queued" }, { status: "written", r3Status: { in: ["queued", "force"] } }] },
+      orderBy: { updatedAt: "asc" },
+      select: { id: true, updatedAt: true },
+    }),
+    prisma.appSetting.findUnique({ where: { key: STUCK_ALERT_KEY } }),
+  ]);
+  let stuckAlerted = false;
+  const jam = stuck.length ? `${stuck[0].id}|${stuck[0].updatedAt.toISOString()}` : "";
+  if (m?.at && jam && !agentSilent(m, now.getTime()) && stuckAlert?.value !== jam) {
+    stuckAlerted = await notifyOfficeGroup(
+      `มี ${stuck.length} รายการรอลง Express เกิน 1 ชม. ทั้งที่เครื่อง Office ยังติดต่ออยู่: ดู C:\\nukyok-agent\\var\\agent.log บนเครื่อง Office (ตาราง Express ถูกล็อกหรือหาไม่พบ ดิสก์เต็ม ส่งผลกลับไม่ได้)\n${appLink("/office/express")}`
+    );
+    if (stuckAlerted) await prisma.appSetting.upsert({ where: { key: STUCK_ALERT_KEY }, update: { value: jam }, create: { key: STUCK_ALERT_KEY, value: jam } });
+  }
+
+  return {
+    fuelReminded: fuel.map((f) => f.no),
+    clockOutAlerted: open.map((a) => a.user.name),
+    serviceDue: due.map((d) => d.v.code),
+    expressAgentAlerted: agentAlerted,
+    expressStuckAlerted: stuckAlerted,
+  };
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ job: string }> }) {

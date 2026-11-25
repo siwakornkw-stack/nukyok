@@ -24,6 +24,7 @@ model User {
   rememberVehicleId String? // "จำข้อมูลไว้" on the fuel / repair forms
   aiKeyHash         String?   @unique // sha256 of this user's เลขา AI key (the key is shown once, /ai)
   aiKeyAt           DateTime? // when that key was made
+  sessionsAfter     DateTime? // sessions signed in before this are refused (set when Office disables the user)
   createdAt         DateTime  @default(now())
 
   attendances Attendance[]
@@ -101,6 +102,7 @@ model FuelRequest {
   supplierCode  String    @default("") // Express supplier of the pump
   supplierName  String    @default("")
   invoice       String    @default("") // tax invoice no. on the slip (H3 "เลขที่บิล")
+  invoiceDate   DateTime? @db.Date // date on the tax invoice = the Express bill date (null: Bangkok date of filledAt)
   slipPhoto     String?
   slipRead      Json? // what the AI read from slipPhoto (src/lib/slip.ts); null = not read
   odometer      Decimal?  @db.Decimal(12, 1) // เลขไมค์ read by the filler at the pump
@@ -162,6 +164,7 @@ model RepairRequest {
   supplierName String    @default("")
   itemCode     String    @default("") // Express service item
   invoice      String    @default("") // tax invoice no.
+  invoiceDate  DateTime? @db.Date // date on the tax invoice = the Express PO / RR date (null: Bangkok date of costedAt)
   costedBy     String?
   costedAt     DateTime?
 

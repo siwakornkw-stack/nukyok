@@ -5,7 +5,14 @@
 //   item.stock    STMAS STKTYP is not 5 (e.g. "140 SY", FIFO lots): only the PK
 //                 is written, staff key that H3 themselves.
 //   item.vatClaim the item's latest H3 claimed the VAT (FLGVAT 1). One that did
-//                 not (FLGVAT 0 + a "ภาษีซื้อขอคืนไม่ได้" line) also gets the PK only.
+//                 not (FLGVAT 0 + a "ภาษีซื้อขอคืนไม่ได้" line) also gets the PK only, and
+//                 so does one with no live H3 yet (unknown: staff key its first H3).
+//   supplier.vat  a usable tax ID in APMAS (13 digits, not a filler such as 0000000000000).
+//                 The ID itself only for a Thai company (0 then 1-9): an individual's (a
+//                 national ID, or 00... for a non-Thai person) never leaves the office PC.
+//                 The same rule as the repair masters (supplierTax).
+import { supplierTax } from "./repair.mjs";
+
 export function buildFuelMasters({ popr, poprit, stmas, apmas, istab, aptrn, stcrd }, since = "2025-01-01") {
   const books = (no) => no.startsWith("PP") || no.startsWith("PK");
   const heads = new Map(popr.filter((p) => books(p.PONUM) && p.PODAT && p.PODAT >= since && p.DOCSTAT !== "C").map((p) => [p.PONUM, p]));
@@ -45,7 +52,7 @@ export function buildFuelMasters({ popr, poprit, stmas, apmas, istab, aptrn, stc
   const supRows = [...sups.values()]
     .map((s) => {
       const a = apmas.find((x) => x.SUPCOD === s.code);
-      return { code: s.code, name: a ? `${a.PRENAM} ${a.SUPNAM}`.trim() : s.code, taxId: a?.TAXID || "", branch: a?.ORGNUM ? String(a.ORGNUM) : "", uses: s.uses, last: s.last };
+      return { code: s.code, name: a ? `${a.PRENAM} ${a.SUPNAM}`.trim() : s.code, ...supplierTax(a?.TAXID || ""), branch: a?.ORGNUM ? String(a.ORGNUM) : "", uses: s.uses, last: s.last };
     })
     .sort((a, b) => b.uses - a.uses)
     .slice(0, 60);
@@ -61,7 +68,7 @@ export function buildFuelMasters({ popr, poprit, stmas, apmas, istab, aptrn, stc
         depName: deps.get(it.depCode) || "",
         unit: s?.PQUCOD || "ลต",
         stock: !!s && s.STKTYP !== "5",
-        vatClaim: !h || h.FLGVAT !== "0",
+        vatClaim: !!h && h.FLGVAT !== "0",
         uses: it.uses,
         last: it.last,
       };

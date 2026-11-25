@@ -38,7 +38,7 @@ export default async function CostsPage({ searchParams }: { searchParams: Promis
   const thisMonth = today.slice(0, 7);
 
   // ?from&to, or ?month=2026-11 from older links; default this month so far
-  const month = /^\d{4}-\d{2}$/.test(one("month")) ? one("month") : "";
+  const month = isDateKey(`${one("month")}-01`) ? one("month") : "";
   let from = isDateKey(one("from")) ? one("from") : month ? `${month}-01` : `${thisMonth}-01`;
   let to = isDateKey(one("to")) ? one("to") : month ? dayBefore(`${shift(month, 1)}-01`) : today;
   if (to < from) [from, to] = [to, from];

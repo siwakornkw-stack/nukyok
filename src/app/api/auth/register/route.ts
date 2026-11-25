@@ -1,11 +1,13 @@
 import { prisma } from "@/lib/db";
-import { bad, formStr, ok, readForm } from "@/lib/http";
+import { bad, crossSite, formStr, ok, readForm } from "@/lib/http";
 import { appLink, notifyOfficeGroup } from "@/lib/line";
 import { ROLES, ROLE_KEYS } from "@/lib/roles";
 import { currentUser } from "@/lib/session";
+import { nameOk } from "./name";
 
 // A pending user (not active yet, so not apiUser) says who they are and which role they need.
 export async function POST(req: Request) {
+  if (crossSite(req.headers)) return bad("ระบบไม่รับคำขอที่ส่งมาจากเว็บอื่น", 403);
   const u = await currentUser();
   if (!u) return bad("กรุณาเข้าสู่ระบบใหม่", 401);
   if (u.status !== "pending") return bad(u.status === "disabled" ? "บัญชีนี้ถูกปิดการใช้งาน ติดต่อ Office" : "บัญชีนี้ได้รับการอนุมัติแล้ว", 403);
@@ -15,7 +17,7 @@ export async function POST(req: Request) {
   const phone = formStr(fd, "phone", 100);
   const posted = formStr(fd, "role", 40);
   const role = ROLE_KEYS.find((r) => r === posted);
-  if (name.length < 2 || name.length > 80) return bad("กรอกชื่อ-นามสกุล 2-80 ตัวอักษร");
+  if (!nameOk(name)) return bad("กรอกชื่อ-นามสกุล 2-60 ตัวอักษร ใช้ได้เฉพาะตัวอักษร เว้นวรรค และ . - ' ( ) ไม่มีตัวเลขหรือลิงก์ (จุดหน้าอักษรอังกฤษต้องเว้นวรรค เช่น Mr. John)");
   if (phone.length > 20 || !/^[0-9 +-]*$/.test(phone)) return bad("เบอร์โทรใช้ได้เฉพาะตัวเลข เว้นวรรค - และ + ไม่เกิน 20 ตัว");
   if (!role) return bad("เลือกบทบาทที่ต้องการ");
   const data = { name, phone, requestedRole: role };

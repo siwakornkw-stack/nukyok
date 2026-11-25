@@ -128,6 +128,7 @@ export default async function PricesPage({ searchParams }: { searchParams: Promi
                 );
               })}
             </div>
+            <p className="mt-2 text-xs text-muted">ผู้ขายที่เป็นบุคคลธรรมดาแสดงเฉพาะชื่อ ไม่แสดงเลขประจำตัว ที่อยู่ เบอร์โทร และหมายเหตุ</p>
           </Card>
 
           <Card title={lines.length > HISTORY ? `ประวัติการซื้อ ${HISTORY} รายการล่าสุด จาก ${lines.length}` : `ประวัติการซื้อ ${lines.length} รายการ`}>

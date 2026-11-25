@@ -1,13 +1,15 @@
 import { createHash, timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/db";
-import { csv } from "@/lib/csv";
+import { csv, exportToken } from "@/lib/csv";
+import { getMasters } from "@/lib/express";
 import { dec, driverOf } from "@/lib/format";
 import { latestHours, PM_STATE, pmState } from "@/lib/summary";
 import { hoursBetween } from "@/lib/time";
 import { FUEL_STATUS, REPAIR_STATUS, URGENCY } from "@/components/ui";
 
-// Read-only Google Sheets view: =IMPORTDATA("<APP_URL>/api/export/fuel?token=<EXPORT_TOKEN>").
-// No session; the token is the key. Latest 5000 rows, Bangkok times, plain numbers.
+// Read-only Google Sheets view: =IMPORTDATA("<APP_URL>/api/export/<kind>?token=<token of that kind>"), the formulas
+// are on the Office home page. No session; each kind has its own token (exportToken in lib/csv), so whoever sees one
+// sheet's formula opens only that kind. Latest 5000 rows, Bangkok times, plain numbers. No GPS in attendance.
 type Row = (string | number | null | undefined)[];
 
 const LIMIT = 5000;
@@ -15,7 +17,6 @@ const LIMIT = 5000;
 // "YYYY-MM-DD HH:mm" in Bangkok (UTC+7, no daylight saving)
 const at = (d: Date | null | undefined) => (d ? new Date(d.getTime() + 7 * 3_600_000).toISOString().slice(0, 16).replace("T", " ") : "");
 const label = (map: Record<string, [string, unknown]>, v: string) => map[v]?.[0] ?? v;
-const coords = (lat: number | null, lng: number | null) => (lat !== null && lng !== null ? `${lat},${lng}` : "");
 // flags: [{ code, text }] -> "text; text"
 const flagText = (j: unknown) =>
   Array.isArray(j) ? j.map((x) => (x as { text?: unknown } | null)?.text).filter((t) => typeof t === "string").join("; ") : "";
@@ -92,24 +93,24 @@ async function table(kind: string): Promise<Row[] | null> {
   if (kind === "attendance") {
     const list = await prisma.attendance.findMany({ orderBy: { inAt: "desc" }, take: LIMIT, include: { user: { select: { name: true } } } });
     return [
-      ["วันที่", "ชื่อ", "เข้างาน", "ออกงาน", "ชั่วโมง", "พิกัดเข้างาน", "พิกัดออกงาน"],
+      ["วันที่", "ชื่อ", "เข้างาน", "ออกงาน", "ชั่วโมง"],
       ...list.map((a) => [
         a.workDate.toISOString().slice(0, 10),
         a.user.name,
         at(a.inAt),
         at(a.outAt),
         a.outAt ? Math.round(hoursBetween(a.inAt, a.outAt) * 100) / 100 : "",
-        coords(a.inLat, a.inLng),
-        coords(a.outLat, a.outLng),
       ]),
     ];
   }
   if (kind === "vehicles") {
-    const [list, hours] = await Promise.all([prisma.vehicle.findMany({ orderBy: { code: "asc" }, take: LIMIT }), latestHours()]);
+    const [list, hours, masters] = await Promise.all([prisma.vehicle.findMany({ orderBy: { code: "asc" }, take: LIMIT }), latestHours(), getMasters()]);
     return [
       ["รหัส", "รุ่น", "ลิตร/ชม. มาตรฐาน", "ความจุถัง", "รอบเช็คระยะ (ชม.)", "เช็คล่าสุดที่ (ชม.)", "ชม.เครื่องล่าสุด", "ครบรอบถัดไปที่ (ชม.)", "สถานะเช็คระยะ", "Express รหัส", "Express แผนก", "ใช้งาน", "หมายเหตุ"],
       ...list.map((v) => {
         const pm = pmState(v, hours.get(v.id));
+        // the department bills are booked to, as on the vehicle card: the typed one, else its fuel item's own
+        const itemDep = masters?.fuel.items.find((i) => i.code === v.expressItem)?.depCode;
         return [
           v.code,
           v.model,
@@ -121,7 +122,7 @@ async function table(kind: string): Promise<Row[] | null> {
           pm?.due,
           pm ? PM_STATE[pm.state][0] : "",
           v.expressItem,
-          v.expressDep,
+          v.expressDep || (itemDep ? `${itemDep} (ตามรหัสน้ำมัน)` : ""),
           v.active ? "ใช่" : "ไม่",
           v.note,
         ];
@@ -132,11 +133,12 @@ async function table(kind: string): Promise<Row[] | null> {
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ kind: string }> }) {
-  const want = process.env.EXPORT_TOKEN;
+  const { kind } = await params;
+  const want = exportToken(kind); // "" = EXPORT_SECRET unset, or weak in production: the export is off
   if (!want) return new Response("not found", { status: 404 });
   const digest = (s: string) => createHash("sha256").update(s).digest();
   if (!timingSafeEqual(digest(new URL(req.url).searchParams.get("token") ?? ""), digest(want))) return new Response("forbidden", { status: 403 });
-  const rows = await table((await params).kind);
+  const rows = await table(kind);
   if (!rows) return new Response("not found", { status: 404 });
   return new Response(csv(rows), { headers: { "Content-Type": "text/csv; charset=utf-8", "Cache-Control": "no-store" } });
 }

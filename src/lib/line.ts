@@ -7,6 +7,9 @@ import type { Role } from "./roles";
 // are only logged. Sending never throws: a failed notification must not fail the
 // request that triggered it.
 const API = "https://api.line.me";
+// Every call to LINE gives up after this: a stalled LINE must not hold a request past nginx's 60 s (the person
+// would send it again) nor stretch a cron tick into the next one. A timeout counts as "no answer".
+const timeout = () => AbortSignal.timeout(10_000);
 
 // Channel access token: LINE_CHANNEL_ACCESS_TOKEN (long-lived) when set, else a
 // stateless 15-minute token issued from LINE_CHANNEL_ID + LINE_CHANNEL_SECRET
@@ -21,6 +24,7 @@ async function accessToken(): Promise<string> {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ grant_type: "client_credentials", client_id: id, client_secret: secret }),
+    signal: timeout(),
   });
   if (!r.ok) throw new Error(`token ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
   const j = (await r.json()) as { access_token: string; expires_in: number };
@@ -52,6 +56,7 @@ async function call(path: string, body: unknown): Promise<boolean> {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: timeout(),
     });
     if (!r.ok) {
       const answer = (await r.text().catch(() => "")).slice(0, 300);
@@ -107,7 +112,7 @@ export async function quotaUsage(): Promise<{ limit: number | null; used: number
     const token = await accessToken();
     if (!token) return null;
     const get = async (path: string) => {
-      const r = await fetch(API + path, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await fetch(API + path, { headers: { Authorization: `Bearer ${token}` }, signal: timeout() });
       if (!r.ok) throw new Error(`${path} ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
       return r.json();
     };
@@ -149,6 +154,7 @@ export async function verifyIdToken(idToken: string): Promise<{ sub: string; nam
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ id_token: idToken, client_id: clientId }),
+      signal: timeout(),
     });
     if (!r.ok) return null;
     const p = (await r.json()) as { sub?: unknown; name?: unknown };

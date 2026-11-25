@@ -1,12 +1,14 @@
 import { prisma } from "@/lib/db";
-import { bad, jsonBody, ok, str } from "@/lib/http";
+import { bad, crossSite, jsonBody, ok, str } from "@/lib/http";
 import { verifyIdToken } from "@/lib/line";
 import { setSession } from "@/lib/session";
 
 // LIFF ID token -> session. A LINE user seen for the first time gets a pending
 // account (they fill in /register, Office approves). ADMIN_LINE_USER_IDS are
 // made active Office users at once, so the first Office can approve the rest.
+// Only from this site's own pages: another site must not sign a browser in to its own account (login CSRF).
 export async function POST(req: Request) {
+  if (crossSite(req.headers)) return bad("ระบบไม่รับคำขอที่ส่งมาจากเว็บอื่น", 403);
   const b = await jsonBody(req);
   const who = await verifyIdToken(str(b.idToken, 4000));
   if (!who) return bad("ยืนยันตัวตนกับ LINE ไม่สำเร็จ", 401);

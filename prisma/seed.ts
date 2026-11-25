@@ -1,6 +1,18 @@
 // Dev data for local testing (DEV_LOGIN=1): one user per role and a few vehicles.
-// Safe to re-run. Not for production: real users come in through LINE.
+// Safe to re-run. Not for production: real users come in through LINE. Active fake users of every role would join
+// every role's LINE notifications, so it refuses to run unless DEV_LOGIN=1, outside production, on a database of
+// this machine (the server's own database is local too: its DEV_LOGIN=0 is what stops it there). Both values come from
+// the environment or the project's .env, which @prisma/client loads on import (not loaded = refused).
 import { PrismaClient } from "@prisma/client";
+
+let host = "";
+try {
+  host = new URL(process.env.DATABASE_URL ?? "").hostname;
+} catch {}
+if (process.env.DEV_LOGIN !== "1" || process.env.NODE_ENV === "production" || !["localhost", "127.0.0.1", "[::1]"].includes(host)) {
+  console.error(`seed refused: only for a dev database on this machine with DEV_LOGIN=1 (DEV_LOGIN=${process.env.DEV_LOGIN ?? ""}, NODE_ENV=${process.env.NODE_ENV ?? ""}, host ${host || "?"})`);
+  process.exit(1);
+}
 
 const prisma = new PrismaClient();
 

@@ -14,7 +14,11 @@ export const dateOnly = (key: string) => new Date(`${key}T00:00:00Z`);
 // Start of a Bangkok date as an instant (00:00 +07:00).
 export const bkkStart = (key: string) => new Date(`${key}T00:00:00+07:00`);
 
-export const isDateKey = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(v));
+// A real "YYYY-MM-DD" of 2000-2099: not 2026-11-31 (Date.parse rolls it into 1 December), nor a Buddhist-era year.
+export const isDateKey = (v: unknown): v is string =>
+  typeof v === "string" &&
+  /^20\d\d-\d\d-\d\d$/.test(v) &&
+  new Date(Date.UTC(Number(v.slice(0, 4)), Number(v.slice(5, 7)) - 1, Number(v.slice(8, 10)))).toISOString().slice(0, 10) === v;
 
 export const thDate = (d: Date | null | undefined) =>
   d ? new Intl.DateTimeFormat("th-TH", { timeZone: TZ, day: "numeric", month: "short", year: "2-digit" }).format(d) : "-";

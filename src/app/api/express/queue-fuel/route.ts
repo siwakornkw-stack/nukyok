@@ -49,6 +49,7 @@ export async function POST(req: Request) {
           pricePerLiter: dec(f.pricePerLiter) ?? 0,
           amount: dec(f.amount) ?? 0,
           filledAt: f.filledAt ?? new Date(),
+          invoiceDate: f.invoiceDate,
           vehicle: f.vehicle,
         },
         u.name
@@ -56,7 +57,9 @@ export async function POST(req: Request) {
     });
     if (!result) return bad(CHANGED);
     if ("manual" in result) return ok({ manual: true });
-    return result.queued ? ok({ queued: true }) : ok({ notice: `ยังส่งเข้า Express ไม่ได้: ${result.reason}` });
+    // note: queued with a change the person must act on (a closed VAT month: the PK only, staff key the H3)
+    if (result.queued) return ok({ queued: true, ...(result.note ? { notice: result.note } : {}) });
+    return ok({ notice: `ยังส่งเข้า Express ไม่ได้: ${result.reason}` });
   } catch (e) {
     // two people acted on it at once: ExpressOrder.fuelRequestId is unique, the other one won
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") return bad(CHANGED);

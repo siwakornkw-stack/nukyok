@@ -7,11 +7,11 @@ const isprd = [{ BEG10: "2020-10-01", END10: "2020-10-31", LOCK10: "N", BEG1NY: 
 type Row = Record<string, unknown>;
 const tables = (extra: Record<string, Row[]> = {}) => ({
   aptrn: <Row[]>[
-    { RECTYP: "1", DOCNUM: "H30000005", DOCDAT: "2026-10-21", PONUM: "PK0000001", REFNUM: "", DOCSTAT: "N", NETAMT: 2574.4 },
+    { RECTYP: "1", DOCNUM: "H30000005", DOCDAT: "2026-10-21", PONUM: "PK0000001", REFNUM: "", DOCSTAT: "N", AMOUNT: 2574.4, NETAMT: 2574.4 },
     { RECTYP: "1", DOCNUM: "H30000004", DOCDAT: "2026-10-21", PONUM: "PK0000001", REFNUM: "", DOCSTAT: "N", NETAMT: 0 }, // abandoned blank H3
   ],
   stcrd: <Row[]>[{ DOCNUM: "H30000005", SEQNUM: "1", STKCOD: "81-0664", TRNVAL: 2574.4 }],
-  apmas: [{ SUPCOD: "0009", SUPNAM: "สุพัฒน์พงศ์  เทวาวณิชกิจ" }],
+  apmas: [{ SUPCOD: "0009", SUPNAM: "ผู้ถือบัตร  นามสกุลทดสอบ" }], // placeholder for the card holder's name
   isprd,
   isrun: [{ DOCTYP: "RR", PREFIX: "R3", ACCNUM01: "2111-02" }],
   ...extra,
@@ -42,7 +42,7 @@ describe("R3 plan", () => {
       drAcc: "2120-03", crAcc: "2111-02", balColumn: "RR1NY", total: 2574.4,
       lines: [{ desc: "81-0664 /H30000005", amount: 2574.4 }], h3: ["H30000005"],
     });
-    expect((p as { glDescr?: string }).glDescr).toBe("สุพัฒน์พงศ์  เทวาวณิชกิจ:ค่าน้ำมัน(บัตรเครดิต)21/1"); // cut to 50 like Express
+    expect((p as { glDescr?: string }).glDescr).toBe("ผู้ถือบัตร  นามสกุลทดสอบ:ค่าน้ำมัน(บัตรเครดิต)21/1"); // cut to 50 like Express
   });
 
   it("waits for an H3, and never puts an H3 on an R3 twice", () => {
@@ -55,14 +55,14 @@ describe("R3 plan", () => {
     const u = tables({
       stcrd: [...tables().stcrd, { DOCNUM: "R3691021-01", SEQNUM: "3", STKCOD: "2120-03", STKDES: "81-0664 / H30000005", TRNVAL: 2574.4 }],
     });
-    u.aptrn.push({ RECTYP: "3", DOCNUM: "R3691021-01", DOCDAT: "2026-10-21", SUPCOD: "0009", REFNUM: "", DOCSTAT: "N", NETAMT: 9000, REMAMT: 9000, PAYAMT: 0 });
+    u.aptrn.push({ RECTYP: "3", DOCNUM: "R3691021-01", DOCDAT: "2026-10-21", SUPCOD: "0009", REFNUM: "", DOCSTAT: "N", AMOUNT: 2574.4, NETAMT: 2574.4, REMAMT: 2574.4, PAYAMT: 0 });
     expect(planR3({ pkNo: "PK0000001", ...u })).toEqual({ status: "exists", docNo: "R3691021-01" });
     expect(h3Ref("SY55 /H3690829-03")).toBe("H3690829-03");
     expect(h3Ref("ก-1725 H3691004-07")).toBe(""); // no slash: not a reference
   });
 
   // The day's R3 as the office keys it: one per date, lines from the card statement.
-  const day = (o: Record<string, unknown> = {}) => ({ RECTYP: "3", DOCNUM: "R3691021-01", DOCDAT: "2026-10-21", SUPCOD: "0009", REFNUM: "", DOCSTAT: "N", NETAMT: 6400, REMAMT: 6400, PAYAMT: 0, ...o });
+  const day = (o: Record<string, unknown> = {}) => ({ RECTYP: "3", DOCNUM: "R3691021-01", DOCDAT: "2026-10-21", SUPCOD: "0009", REFNUM: "", DOCSTAT: "N", AMOUNT: 6400, NETAMT: 6400, REMAMT: 6400, PAYAMT: 0, ...o });
   const dayLines = [
     { DOCNUM: "R3691021-01", SEQNUM: "1", STKCOD: "2120-03", STKDES: "SY55 /H3691021-02", TRNVAL: 3600 },
     { DOCNUM: "R3691021-01", SEQNUM: "2", STKCOD: "2120-03", STKDES: "81-2801", TRNVAL: 2800 },
@@ -85,11 +85,41 @@ describe("R3 plan", () => {
   it("holds an H3 whose amount matches an unreferenced line of the day's R3, until an admin confirms", () => {
     const twin = { DOCNUM: "R3691021-01", SEQNUM: "3", STKCOD: "2120-03", STKDES: "81-0664", TRNVAL: 2574.4 };
     const t = tables({ stcrd: [...tables().stcrd, ...dayLines, twin] });
-    t.aptrn.push(day({ NETAMT: 8974.4, REMAMT: 8974.4 }));
+    t.aptrn.push(day({ AMOUNT: 8974.4, NETAMT: 8974.4, REMAMT: 8974.4 }));
     const p = planR3({ pkNo: "PK0000001", ...t });
     expect(p).toMatchObject({ status: "error", duplicate: true });
     expect((p as { reason?: string }).reason).toMatch(/^อาจซ้ำ: R3691021-01 มีบรรทัด "81-0664" 2574.4/);
     expect(planR3({ pkNo: "PK0000001", ...t }, { force: true })).toMatchObject({ status: "ready", mode: "append", docNo: "R3691021-01" });
+  });
+
+  // An append cut off part way leaves lines on the day's R3 without its totals: nothing more goes
+  // onto it, and a line naming the H3 there does not mean the H3 is booked.
+  it("leaves an R3 whose lines do not add up to it to a person", () => {
+    const t = tables({ stcrd: [...tables().stcrd, ...dayLines] });
+    t.aptrn.push(day({ AMOUNT: 3600, NETAMT: 3600, REMAMT: 3600 }));
+    const why = {
+      status: "error",
+      reason: "รายการของ R3691021-01 รวม 6400.00 ไม่เท่ากับยอดของเอกสาร (3600.00) อาจเขียนลง Express ค้างไว้ไม่สมบูรณ์ ต้องตรวจใน Express",
+    };
+    expect(planR3({ pkNo: "PK0000001", ...t })).toEqual(why);
+    expect(planR3({ pkNo: "PK0000001", ...t }, { force: true })).toEqual(why);
+    const cut = { DOCNUM: "R3691021-01", SEQNUM: "3", STKCOD: "2120-03", STKDES: "81-0664 /H30000005", TRNVAL: 2574.4 };
+    const u = tables({ stcrd: [...tables().stcrd, ...dayLines, cut] });
+    u.aptrn.push(day());
+    expect(planR3({ pkNo: "PK0000001", ...u })).toMatchObject({ status: "error", reason: expect.stringMatching(/^รายการของ R3691021-01 รวม 8974.40 /) });
+  });
+
+  // A write cut off part-way leaves rows under an H3 number the next bill of that date takes again.
+  it("refuses an H3 whose lines do not add up to it", () => {
+    const t = tables({ stcrd: [...tables().stcrd, { DOCNUM: "H30000005", SEQNUM: "1", STKCOD: "70-1826", TRNVAL: 1004.67 }] });
+    expect(planR3({ pkNo: "PK0000001", ...t })).toEqual({
+      status: "error",
+      reason: "รายการของ H3 H30000005 รวม 3579.07 ไม่เท่ากับยอดของบิล (2574.40) อาจมีบิลอื่นเขียนค้างไว้ใต้เลขเดียวกัน ต้องตรวจใน Express",
+    });
+    // VAT on top (FLGVAT 2): the lines add up to AMOUNT, NETAMT carries the VAT; the R3 books NETAMT
+    const v = tables({ stcrd: [{ DOCNUM: "H30000005", SEQNUM: "1", STKCOD: "81-0664", TRNVAL: 1500 }, { DOCNUM: "H30000005", SEQNUM: "2", STKCOD: "70-1826", TRNVAL: 1200 }] });
+    v.aptrn[0] = { ...v.aptrn[0], AMOUNT: 2700, NETAMT: 2889 };
+    expect(planR3({ pkNo: "PK0000001", ...v })).toMatchObject({ status: "ready", total: 2889, lines: [{ amount: 1605 }, { amount: 1284 }] });
   });
 
   it("leaves a PK whose H3s span several dates to a person", () => {

@@ -3,10 +3,10 @@ import { prisma } from "@/lib/db";
 import { requirePage } from "@/lib/session";
 import { getMasters } from "@/lib/express";
 import { baht, dec, driverOf, num } from "@/lib/format";
-import { thDateTime } from "@/lib/time";
+import { bkkDateKey, thDate, thDateTime } from "@/lib/time";
 import { Card, Field, Files, FUEL_STATUS, Info, PageHeader, StatusPill, inputCls, Notice } from "@/components/ui";
 import { ApiForm, PhotoInput, SlipInput } from "@/components/forms";
-import { readingText } from "@/lib/fuel-checks";
+import { readingText, type SlipRead } from "@/lib/fuel-checks";
 
 const SOURCE: Record<string, string> = { pump: "ปั๊ม", tank: "ถังกลาง" };
 
@@ -21,6 +21,10 @@ export default async function FillerRequestPage({ params }: { params: Promise<{ 
   const open = r.status === "waiting" || r.status === "returned";
   const suppliers = open ? ((await getMasters())?.fuel.suppliers ?? []) : [];
   const knownSupplier = suppliers.some((s) => s.code === r.supplierCode);
+  // the invoice date saved before (a returned fill), else the date read from the slip, else the day a returned fill
+  // was filled (one saved before the date was asked: the fill keeps its filledAt), else today
+  const today = bkkDateKey();
+  const invoiceDate = r.invoiceDate?.toISOString().slice(0, 10) || (r.slipRead as SlipRead | null)?.date || (r.filledAt ? bkkDateKey(r.filledAt) : today);
 
   return (
     <>
@@ -72,7 +76,7 @@ export default async function FillerRequestPage({ params }: { params: Promise<{ 
               label="รูปสลิป"
               hint={`${r.slipPhoto ? "มีรูปเดิมแล้ว ถ่ายใหม่เฉพาะเมื่อต้องการเปลี่ยน" : "จำเป็นเมื่อเติมจากปั๊ม"}${process.env.GEMINI_API_KEY ? " · ถ่ายแล้วระบบอ่านและกรอกตัวเลขให้" : ""}`}
             >
-              <SlipInput action={`/api/fuel/${r.id}/slip`} />
+              <SlipInput action={`/api/fuel/${r.id}/slip`} current={r.slipPhoto ?? ""} />
             </Field>
             {r.slipPhoto && (
               <div className="mb-3">
@@ -118,6 +122,10 @@ export default async function FillerRequestPage({ params }: { params: Promise<{ 
             <Field label="เลขที่ใบกำกับภาษี">
               <input name="invoice" maxLength={40} defaultValue={r.invoice} className={inputCls} />
             </Field>
+            {/* Express dates the PK / H3 and its input VAT by it: a slip bought before midnight and saved after keeps its own date */}
+            <Field label="วันที่ในใบกำกับภาษี" hint="เติมจากปั๊ม: วันที่บนสลิป (ไม่ใช่วันที่พิมพ์)">
+              <input type="date" name="invoiceDate" max={today} defaultValue={invoiceDate} className={inputCls} />
+            </Field>
           </ApiForm>
         </Card>
       ) : (
@@ -135,6 +143,7 @@ export default async function FillerRequestPage({ params }: { params: Promise<{ 
               ["แหล่งน้ำมัน", r.source ? (SOURCE[r.source] ?? r.source) : "-"],
               ["ปั๊ม", r.supplierName || "-"],
               ["เลขที่ใบกำกับภาษี", r.invoice || "-"],
+              ["วันที่ในใบกำกับภาษี", thDate(r.invoiceDate)],
               ["รูปสลิป", <Files key="slip" keys={[r.slipPhoto]} />],
               ["หมายเหตุ Office", r.returnNote || "-"],
             ]}
